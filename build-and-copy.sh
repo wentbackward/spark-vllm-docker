@@ -198,6 +198,7 @@ if downloads:
     local URL NAME TMP_WHL
     local DOWNLOADED=()
     while IFS=' ' read -r URL NAME; do
+        [ -z "$URL" ] && continue
         echo "Downloading $NAME..."
         TMP_WHL=$(mktemp "$WHEELS_DIR/${NAME}.XXXXXX")
         if curl -L --progress-bar --connect-timeout 30 "$URL" -o "$TMP_WHL"; then
