@@ -1,0 +1,39 @@
+# Recipe: Qwen2.5-Coder-7B-Instruct
+# Fast, reliable coding/tool-calling model for agentic workflows
+
+recipe_version: "1"
+name: Qwen2.5-Coder-7B
+description: vLLM serving Qwen2.5-Coder-7B-Instruct
+
+# HuggingFace model to download (optional, for --download-model)
+model: Qwen/Qwen2.5-Coder-7B-Instruct
+
+# Container image to use
+container: vllm-node
+
+solo_only: true
+
+# No mods required
+mods: []
+
+# Default settings (can be overridden via CLI)
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.2
+  max_model_len: 32768
+
+# The vLLM serve command template
+command: |
+  vllm serve Qwen/Qwen2.5-Coder-7B-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --enable-prefix-caching \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    -tp {tensor_parallel}

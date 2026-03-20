@@ -209,9 +209,12 @@ if [[ -n "$LAUNCH_SCRIPT_PATH" ]]; then
     
     echo "Using launch script: $LAUNCH_SCRIPT_PATH"
     
-    # Set command to run the copied script (use absolute path since docker exec may not be in /workspace)
-    COMMAND_TO_RUN="/workspace/exec-script.sh"
+    # Set command to run the copied script (use unique name to allow multiple concurrent models)
+    EXEC_SCRIPT_NAME="exec-script-$$.sh"
+    COMMAND_TO_RUN="/workspace/$EXEC_SCRIPT_NAME"
     LAUNCH_SCRIPT_MODE="true"
+
+
 
     # If launch script is specified, default action to exec unless explicitly set to stop/status
     if [[ "$ACTION" == "start" ]]; then
@@ -577,6 +580,15 @@ copy_script_to_container() {
     echo "Copying launch script to $label..."
     docker cp "$script_path" "$container:/workspace/exec-script.sh" || { echo "Error: docker cp to $label failed"; exit 1; }
     docker exec "$container" chmod +x /workspace/exec-script.sh
+    local target_script_path="$script_path"
+
+    # Copy script into container with unique name
+    local dest_name="${EXEC_SCRIPT_NAME:-exec-script.sh}"
+    echo "  Copying script into container as $dest_name..."
+    docker cp "$target_script_path" "$container:/workspace/$dest_name"
+
+    # Make executable
+    docker exec "$container" chmod +x "/workspace/$dest_name"
 }
 
 # Copy a script file to a remote container via scp + docker cp
@@ -636,6 +648,10 @@ start_cluster() {
     check_cluster_running
 
     if [[ "$CLUSTER_WAS_RUNNING" == "true" ]]; then
+        # Still need to copy launch script even if cluster was already running
+        if [[ -n "$LAUNCH_SCRIPT_PATH" ]]; then
+            copy_launch_script_to_container "$CONTAINER_NAME" "$LAUNCH_SCRIPT_PATH"
+        fi
         return
     fi
 
@@ -746,7 +762,10 @@ wait_for_cluster() {
 _exec_on_head() {
     local cmd="$1"
     if [[ "$DAEMON_MODE" == "true" ]]; then
-        docker exec -d "$CONTAINER_NAME" bash -c "$cmd >> /proc/1/fd/1 2>&1"
+        # Daemon mode: run command detached inside the container and exit immediately
+        # Extract env vars starting from VLLM_HOST_IP to avoid interactive check in .bashrc
+        # Redirect output to PID 1 stdout/stderr so it shows up in docker logs
+        docker exec -d "$CONTAINER_NAME" bash -c "eval \"\$(sed -n '/export VLLM_HOST_IP/,\$p' /root/.bashrc)\" && { $COMMAND_TO_RUN; rm -f $COMMAND_TO_RUN; } >> /proc/1/fd/1 2>> /proc/1/fd/2"
         echo "Command dispatched in background (Daemon mode). Container: $CONTAINER_NAME"
     else
         if [ -t 0 ]; then DOCKER_EXEC_FLAGS="-it"; else DOCKER_EXEC_FLAGS="-i"; fi

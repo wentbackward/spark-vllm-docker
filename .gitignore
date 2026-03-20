@@ -1,1 +1,10 @@
 .env
+*.swp
+*.swo
+*~
+aaa-*
+wheels/*.whl
+wheels/.flashinfer-commit
+wheels/.vllm-commit
+__pycache__/
+*.pyc

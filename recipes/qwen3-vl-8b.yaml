@@ -1,0 +1,37 @@
+# Recipe: Qwen3-VL-8B-Instruct
+# Vision-language model for document understanding, OCR, image analysis
+
+recipe_version: "1"
+name: Qwen3-VL-8B
+description: vLLM serving Qwen3-VL-8B-Instruct (vision-language)
+
+# HuggingFace model to download (optional, for --download-model)
+model: Qwen/Qwen3-VL-8B-Instruct
+
+# Container image to use
+container: vllm-node
+
+solo_only: true
+
+# No mods required
+mods: []
+
+# Default settings (can be overridden via CLI)
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.3
+  max_model_len: 65536
+
+# The vLLM serve command template
+command: |
+  vllm serve Qwen/Qwen3-VL-8B-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-prefix-caching \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    -tp {tensor_parallel}
