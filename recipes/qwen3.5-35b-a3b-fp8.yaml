@@ -23,9 +23,9 @@ mods:
 defaults:
   port: 8000
   host: 0.0.0.0
-  tensor_parallel: 2
+  tensor_parallel: 1
   gpu_memory_utilization: 0.7
-  max_model_len: 131072
+  max_model_len: 65535
   max_num_batched_tokens: 16384
 
 # Environment variables
@@ -41,8 +41,10 @@ command: |
     --max-num-batched-tokens {max_num_batched_tokens} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
     --kv-cache-dtype fp8 \
+    -- enforce_eager=False \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
     --enable-prefix-caching \
