@@ -389,7 +389,7 @@ if [[ "$CLEANUP_MODE" == "true" ]]; then
     fi
     
     # Remove all .-commit files
-    if compgen -G "$WHEELS_DIR/*.-commit" > /dev/null 2>&1; then
+    if compgen -G "$WHEELS_DIR/.*-commit" > /dev/null 2>&1; then
         rm -f "$WHEELS_DIR"/.*-commit
         echo "Removed .*-commit files from $WHEELS_DIR"
     else
