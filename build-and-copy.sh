@@ -33,9 +33,41 @@ cleanup() {
         echo "Cleaning up temporary image $TMP_IMAGE"
         rm -f "$TMP_IMAGE"
     fi
+    rm -f ./build-metadata.yaml
 }
 
 trap cleanup EXIT
+
+generate_build_metadata() {
+    local dockerfile="$1"
+    local vllm_version="$2"
+    local vllm_commit="$3"
+    local flashinfer_commit="$4"
+    local vllm_ref="$5"
+    local pre_transformers="$6"
+    local exp_mxfp4="$7"
+    local vllm_prs="$8"
+
+    local base_image
+    base_image=$(grep -m1 '^FROM .* AS runner' "$dockerfile" | awk '{print $2}')
+
+    cat > ./build-metadata.yaml <<EOF
+build_date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+build_script_commit: $(git rev-parse HEAD 2>/dev/null || echo "unknown")
+vllm_version: ${vllm_version:-unknown}
+vllm_commit: ${vllm_commit:-unknown}
+flashinfer_commit: ${flashinfer_commit:-unknown}
+gpu_arch: ${GPU_ARCH_LIST}
+base_image: ${base_image:-unknown}
+build_args:
+  vllm_ref: ${vllm_ref}
+  transformers_5: ${pre_transformers}
+  exp_mxfp4: ${exp_mxfp4}
+  vllm_prs: "${vllm_prs}"
+  build_jobs: ${BUILD_JOBS}
+EOF
+    echo "Generated build-metadata.yaml"
+}
 
 add_copy_hosts() {
     local token part
@@ -365,6 +397,13 @@ RUNNER_BUILD_TIME=0
 if [ "$NO_BUILD" = false ]; then
     if [ "$EXP_MXFP4" = true ]; then
         echo "Building with experimental MXFP4 support..."
+
+        # Generate build metadata YAML for mxfp4 build
+        MXFP4_VLLM_SHA=$(grep -m1 '^ARG VLLM_SHA=' Dockerfile.mxfp4 | cut -d= -f2)
+        MXFP4_FLASHINFER_SHA=$(grep -m1 '^ARG FLASHINFER_SHA=' Dockerfile.mxfp4 | cut -d= -f2)
+        generate_build_metadata Dockerfile.mxfp4 "unknown" "$MXFP4_VLLM_SHA" "$MXFP4_FLASHINFER_SHA" \
+            "mxfp4-pinned" "false" "true" ""
+
         CMD=("docker" "build" "-t" "$IMAGE_TAG" "${COMMON_BUILD_FLAGS[@]}" "-f" "Dockerfile.mxfp4" ".")
         echo "Building image with command: ${CMD[*]}"
         BUILD_START=$(date +%s)
@@ -495,6 +534,15 @@ if [ "$NO_BUILD" = false ]; then
             echo "Error: No wheel files found in ./wheels/ — cannot build runner image."
             exit 1
         fi
+
+        # Generate build metadata YAML
+        VLLM_VERSION=$(ls ./wheels/vllm-*.whl 2>/dev/null | head -1 | sed 's|.*/vllm-||;s|-.*||')
+        VLLM_COMMIT=""
+        [ -f "./wheels/.vllm-commit" ] && VLLM_COMMIT=$(cat ./wheels/.vllm-commit)
+        FLASHINFER_COMMIT=""
+        [ -f "./wheels/.flashinfer-commit" ] && FLASHINFER_COMMIT=$(cat ./wheels/.flashinfer-commit)
+        generate_build_metadata Dockerfile "$VLLM_VERSION" "$VLLM_COMMIT" "$FLASHINFER_COMMIT" \
+            "$VLLM_REF" "$PRE_TRANSFORMERS" "false" "$VLLM_PRS"
 
         RUNNER_CMD=("docker" "build"
             "-t" "$IMAGE_TAG"
