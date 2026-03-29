@@ -183,14 +183,14 @@ RUN if [ -n "$VLLM_PRS" ]; then \
     fi
 
 # TEMPORARY PATCH for broken compilation
-RUN curl -fsL https://patch-diff.githubusercontent.com/raw/vllm-project/vllm/pull/38423.diff -o pr38423.diff \
-    && if git apply --reverse --check pr38423.diff 2>/dev/null; then \
-         echo "Patch already applied, skipping."; \
-       else \
-         echo "Applying patch..."; \
-         git apply -v pr38423.diff; \
-       fi \
-    && rm pr38423.diff
+# RUN curl -fsL https://patch-diff.githubusercontent.com/raw/vllm-project/vllm/pull/38423.diff -o pr38423.diff \
+#     && if git apply --reverse --check pr38423.diff 2>/dev/null; then \
+#          echo "Patch already applied, skipping."; \
+#        else \
+#          echo "Applying patch..."; \
+#          git apply -v pr38423.diff; \
+#        fi \
+#     && rm pr38423.diff
 
 # Prepare build requirements
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
