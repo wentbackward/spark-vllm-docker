@@ -1,0 +1,31 @@
+# Recipe: Qwen/Qwen2.5-Coder-1.5B
+# Base code model for FIM autocomplete (~3.1 GiB)
+# Uses /v1/completions endpoint with FIM tokens:
+#   <|fim_prefix|>{prefix}<|fim_suffix|>{suffix}<|fim_middle|>
+
+recipe_version: "1"
+name: Qwen2.5-Coder-1.5B
+description: vLLM serving Qwen2.5-Coder-1.5B (FIM autocomplete)
+
+model: Qwen/Qwen2.5-Coder-1.5B
+
+container: vllm-node
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.05
+  max_model_len: 4096
+
+command: |
+  vllm serve Qwen/Qwen2.5-Coder-1.5B \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-prefix-caching \
+    --load-format fastsafetensors \
+    -tp {tensor_parallel}

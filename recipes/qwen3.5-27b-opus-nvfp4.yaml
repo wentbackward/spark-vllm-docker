@@ -1,0 +1,44 @@
+# Recipe: mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-NVFP4
+# Claude 4.6 Opus reasoning distilled into Qwen3.5-27B, NVFP4 quantized (~24 GiB)
+# Hybrid DeltaNet + softmax architecture (only 16/64 layers need KV cache)
+
+recipe_version: "1"
+name: Qwen3.5-27B-Opus-NVFP4
+description: vLLM serving Qwen3.5-27B Claude Opus reasoning distilled NVFP4
+
+model: mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-NVFP4
+
+container: vllm-node
+
+mods:
+  - mods/fix-qwen3.5-chat-template
+
+env:
+  VLLM_NVFP4_GEMM_BACKEND: marlin
+  VLLM_USE_FLASHINFER_MOE_FP4: "0"
+  VLLM_TEST_FORCE_FP8_MARLIN: "1"
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.30
+  max_model_len: 65536
+  max_num_seqs: 2
+
+command: |
+  vllm serve mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-NVFP4 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-num-seqs {max_num_seqs} \
+    --kv-cache-dtype fp8_e4m3 \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --enforce_eager \
+    --enable-prefix-caching \
+    --skip-mm-profiling \
+    --chat-template unsloth.jinja \
+    -tp {tensor_parallel}

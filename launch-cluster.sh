@@ -574,20 +574,12 @@ make_node_script() {
     echo "$tmp"
 }
 
-# Copy a script file into a local container as /workspace/exec-script.sh
+# Copy a script file into a local container (uses unique name for multi-model support)
 copy_script_to_container() {
     local container="$1"; local script_path="$2"; local label="${3:-node}"
-    echo "Copying launch script to $label..."
-    docker cp "$script_path" "$container:/workspace/exec-script.sh" || { echo "Error: docker cp to $label failed"; exit 1; }
-    docker exec "$container" chmod +x /workspace/exec-script.sh
-    local target_script_path="$script_path"
-
-    # Copy script into container with unique name
     local dest_name="${EXEC_SCRIPT_NAME:-exec-script.sh}"
-    echo "  Copying script into container as $dest_name..."
-    docker cp "$target_script_path" "$container:/workspace/$dest_name"
-
-    # Make executable
+    echo "Copying launch script to $label as $dest_name..."
+    docker cp "$script_path" "$container:/workspace/$dest_name" || { echo "Error: docker cp to $label failed"; exit 1; }
     docker exec "$container" chmod +x "/workspace/$dest_name"
 }
 
@@ -650,7 +642,7 @@ start_cluster() {
     if [[ "$CLUSTER_WAS_RUNNING" == "true" ]]; then
         # Still need to copy launch script even if cluster was already running
         if [[ -n "$LAUNCH_SCRIPT_PATH" ]]; then
-            copy_launch_script_to_container "$CONTAINER_NAME" "$LAUNCH_SCRIPT_PATH"
+            copy_script_to_container "$CONTAINER_NAME" "$LAUNCH_SCRIPT_PATH" "head node"
         fi
         return
     fi

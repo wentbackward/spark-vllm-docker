@@ -154,6 +154,9 @@ RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     cd flashinfer-cubin && uv build --no-build-isolation --wheel . --out-dir=/workspace/wheels -v
 
 # flashinfer-jit-cache
+# Disable comm module (trtllm_alltoall/nvshmem) — incompatible headers, not needed for single-GPU
+RUN cd /workspace/flashinfer/flashinfer-jit-cache && \
+    sed -i 's/config=None,/config=(aot.get_default_config() | {"add_comm": False}),/' build_backend.py
 RUN --mount=type=cache,id=uv-cache,target=/root/.cache/uv \
     --mount=type=cache,id=ccache,target=/root/.ccache \
     cd flashinfer-jit-cache && \
@@ -238,6 +241,7 @@ ENV UV_CACHE_DIR=/root/.cache/uv
 ENV UV_SYSTEM_PYTHON=1
 ENV UV_BREAK_SYSTEM_PACKAGES=1
 ENV UV_LINK_MODE=copy
+ENV UV_HTTP_TIMEOUT=300
 
 # Install minimal runtime dependencies (NCCL, Python)
 # Note: "devel" tools like cmake/gcc are NOT installed here to save space

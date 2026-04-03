@@ -1,13 +1,12 @@
-# Recipe: Qwen/Qwen3.5-35B-A3B-FP8
-# Qwen/Qwen3.5-35B-A3B model in native FP8 format
-
+# Recipe: QuantTrio/Qwen3.5-35B-A3B-AWQ
+# Qwen3.5-35B-A3B model in 4-bit AWQ quantization (~25 GiB weights)
 
 recipe_version: "1"
-name: Qwen35-35B-A3B
-description: vLLM serving Qwen3.5-35B-A3B-FP8
+name: Qwen35-35B-A3B-AWQ
+description: vLLM serving Qwen3.5-35B-A3B-AWQ (4-bit AWQ)
 
 # HuggingFace model to download (optional, for --download-model)
-model: Qwen/Qwen3.5-35B-A3B-FP8
+model: QuantTrio/Qwen3.5-35B-A3B-AWQ
 
 #solo_only: true
 
@@ -24,17 +23,21 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.38
-  max_model_len: 81920
+  gpu_memory_utilization: 0.3
+  max_model_len: 131072
   max_num_batched_tokens: 16384
 
-# Environment variables
-env: 
+# Environment variables (recommended by model card)
+env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  VLLM_USE_DEEP_GEMM: "0"
+  VLLM_USE_FLASHINFER_MOE_FP16: "1"
+  VLLM_USE_FLASHINFER_SAMPLER: "0"
+  OMP_NUM_THREADS: "4"
 
 # The vLLM serve command template
 command: |
-  vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
+  vllm serve QuantTrio/Qwen3.5-35B-A3B-AWQ \
     --host {host} \
     --port {port} \
     --max-model-len {max_model_len} \
@@ -44,9 +47,14 @@ command: |
     --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
     --kv-cache-dtype fp8 \
+    --enforce_eager \
+    --enable-chunked-prefill \
+    --max-num-seqs 16 \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
     --enable-prefix-caching \
     --chat-template unsloth.jinja \
-    --speculative-config '{{"method":"mtp","num_speculative_tokens":1}}' \
-    -tp {tensor_parallel}
+    -tp {tensor_parallel} \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    --distributed-executor-backend ray
+

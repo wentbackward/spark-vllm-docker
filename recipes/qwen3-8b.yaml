@@ -1,0 +1,33 @@
+# Recipe: Qwen/Qwen3-8B
+# Tool-calling focused model, 87.6% single-turn accuracy on BFCL V4
+# Non-thinking mode for fast, decisive tool calls
+
+recipe_version: "1"
+name: Qwen3-8B
+description: vLLM serving Qwen3-8B (tool calling)
+
+model: Qwen/Qwen3-8B
+
+container: vllm-node
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.20
+  max_model_len: 24576
+
+command: |
+  vllm serve Qwen/Qwen3-8B \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --enforce_eager \
+    -tp {tensor_parallel}

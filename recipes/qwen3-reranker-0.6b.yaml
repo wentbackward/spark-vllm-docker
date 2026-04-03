@@ -1,0 +1,32 @@
+# Recipe: Qwen/Qwen3-Reranker-0.6B
+# Cross-encoder reranker for scoring query-document relevance (~1.2 GiB)
+# Exposes /v1/score and /v1/rerank endpoints
+
+recipe_version: "1"
+name: Qwen3-Reranker-0.6B
+description: vLLM serving Qwen3-Reranker-0.6B (pooling/rerank)
+
+model: Qwen/Qwen3-Reranker-0.6B
+
+container: vllm-node
+
+mods:
+  - mods/qwen3-reranker-template
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.05
+  max_model_len: 4096
+
+command: |
+  vllm serve Qwen/Qwen3-Reranker-0.6B \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --runner pooling \
+    --hf_overrides '{{"architectures": ["Qwen3ForSequenceClassification"], "classifier_from_token": ["no", "yes"], "is_original_qwen3_reranker": true}}' \
+    --chat-template qwen3_reranker.jinja \
+    -tp {tensor_parallel}

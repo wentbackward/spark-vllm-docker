@@ -1,0 +1,29 @@
+# Recipe: nomic-ai/nomic-embed-text-v2-moe
+# Sparse MoE text embedding model, 768-dim, 475M params (~1.9 GiB)
+# Exposes /v1/embeddings endpoint (OpenAI-compatible)
+# Max sequence length: 512 tokens
+
+recipe_version: "1"
+name: Nomic-Embed-v2-MoE
+description: vLLM serving nomic-embed-text-v2-moe (pooling/embed)
+
+model: nomic-ai/nomic-embed-text-v2-moe
+
+container: vllm-node
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.05
+
+command: |
+  vllm serve nomic-ai/nomic-embed-text-v2-moe \
+    --host {host} \
+    --port {port} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --runner pooling \
+    --trust-remote-code \
+    -tp {tensor_parallel}

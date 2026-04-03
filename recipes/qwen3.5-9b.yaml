@@ -1,20 +1,19 @@
-# Recipe: Qwen/Qwen3.5-35B-A3B-FP8
-# Qwen/Qwen3.5-35B-A3B model in native FP8 format
-
+# Recipe: Qwen/Qwen3.5-9B
+# Qwen3.5-9B dense model (~9 GiB weights in FP8, natively BF16)
+# Multimodal: text + image + video
 
 recipe_version: "1"
-name: Qwen35-35B-A3B
-description: vLLM serving Qwen3.5-35B-A3B-FP8
+name: Qwen35-9B
+description: vLLM serving Qwen3.5-9B
 
 # HuggingFace model to download (optional, for --download-model)
-model: Qwen/Qwen3.5-35B-A3B-FP8
+model: Qwen/Qwen3.5-9B
 
 #solo_only: true
 
 # Container image to use
 container: vllm-node
 
-# Mod required to fix slowness and crash in the cluster (tracking https://github.com/vllm-project/vllm/issues/33857)
 mods:
   - mods/fix-qwen3-coder-next
   - mods/fix-qwen3.5-chat-template
@@ -24,17 +23,17 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.38
-  max_model_len: 81920
-  max_num_batched_tokens: 16384
+  gpu_memory_utilization: 0.22
+  max_model_len: 131072
+  max_num_batched_tokens: 4096
 
 # Environment variables
-env: 
+env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
 
 # The vLLM serve command template
 command: |
-  vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
+  vllm serve Qwen/Qwen3.5-9B \
     --host {host} \
     --port {port} \
     --max-model-len {max_model_len} \
@@ -44,9 +43,12 @@ command: |
     --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
     --kv-cache-dtype fp8 \
+    --enforce_eager \
+    --enable-chunked-prefill \
+    --max-num-seqs 4 \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
     --enable-prefix-caching \
     --chat-template unsloth.jinja \
-    --speculative-config '{{"method":"mtp","num_speculative_tokens":1}}' \
-    -tp {tensor_parallel}
+    -tp {tensor_parallel} \
+    --distributed-executor-backend ray

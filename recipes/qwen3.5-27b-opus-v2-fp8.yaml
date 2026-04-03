@@ -1,0 +1,43 @@
+# Recipe: mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-FP8-Dynamic
+# Claude 4.6 Opus reasoning distilled into Qwen3.5-27B, FP8 W8A8 (~27 GiB)
+# v2: more efficient reasoning, +0.41% ppl degradation
+
+recipe_version: "1"
+name: Qwen3.5-27B-Opus-v2-FP8
+description: vLLM serving Qwen3.5-27B Claude Opus reasoning distilled v2 FP8
+
+model: mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-FP8-Dynamic
+
+container: vllm-node
+
+mods:
+  - mods/fix-qwen3.5-chat-template
+
+env:
+  VLLM_TEST_FORCE_FP8_MARLIN: "1"
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.35
+  max_model_len: 32768
+  max_num_seqs: 2
+
+command: |
+  vllm serve mconcat/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-FP8-Dynamic \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-num-seqs {max_num_seqs} \
+    --kv-cache-dtype fp8 \
+    --reasoning-parser qwen3 \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --language-model-only \
+    --enforce_eager \
+    --enable-prefix-caching \
+    --kernel_config '{{\"enable_flashinfer_autotune\": false}}' \
+    --chat-template unsloth.jinja \
+    -tp {tensor_parallel}

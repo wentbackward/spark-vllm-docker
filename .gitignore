@@ -9,3 +9,4 @@ wheels/.flashinfer-commit
 wheels/.vllm-commit
 __pycache__/
 *.pyc
+.venv/

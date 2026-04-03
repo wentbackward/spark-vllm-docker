@@ -3,11 +3,11 @@
 
 
 recipe_version: "1"
-name: Qwen35-35B-A3B
-description: vLLM serving Qwen3.5-35B-A3B-FP8
+name: Qwen35-35B-A3B-Int4
+description: vLLM serving Qwen3.5-35B-A3B-Int4
 
 # HuggingFace model to download (optional, for --download-model)
-model: Qwen/Qwen3.5-35B-A3B-FP8
+model: Qwen/Qwen3.5-35B-A3B-GPTQ-Int4
 
 #solo_only: true
 
@@ -24,8 +24,8 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.38
-  max_model_len: 81920
+  gpu_memory_utilization: 0.7
+  max_model_len: 131072
   max_num_batched_tokens: 16384
 
 # Environment variables
@@ -34,7 +34,7 @@ env:
 
 # The vLLM serve command template
 command: |
-  vllm serve Qwen/Qwen3.5-35B-A3B-FP8 \
+  vllm serve Qwen/Qwen3.5-35B-A3B-GPTQ-Int4 \
     --host {host} \
     --port {port} \
     --max-model-len {max_model_len} \
@@ -44,9 +44,10 @@ command: |
     --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
     --kv-cache-dtype fp8 \
+    --enforce_eager \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
     --enable-prefix-caching \
     --chat-template unsloth.jinja \
-    --speculative-config '{{"method":"mtp","num_speculative_tokens":1}}' \
-    -tp {tensor_parallel}
+    -tp {tensor_parallel} \
+    --distributed-executor-backend ray

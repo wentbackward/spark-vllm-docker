@@ -1,0 +1,29 @@
+# Recipe: Qwen/Qwen3-Embedding-0.6B
+# Dense text embedding model, 1024-dim (~1.2 GiB)
+# Exposes /v1/embeddings endpoint (OpenAI-compatible)
+
+recipe_version: "1"
+name: Qwen3-Embedding-0.6B
+description: vLLM serving Qwen3-Embedding-0.6B (pooling/embed)
+
+model: Qwen/Qwen3-Embedding-0.6B
+
+container: vllm-node
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.05
+  max_model_len: 4096
+
+command: |
+  vllm serve Qwen/Qwen3-Embedding-0.6B \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --runner pooling \
+    -tp {tensor_parallel}
