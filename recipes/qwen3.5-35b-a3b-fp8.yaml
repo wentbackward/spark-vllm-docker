@@ -24,8 +24,8 @@ defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.38
-  max_model_len: 81920
+  gpu_memory_utilization: 0.45
+  max_model_len: 131072
   max_num_batched_tokens: 16384
 
 # Environment variables
@@ -42,7 +42,7 @@ command: |
     --gpu-memory-utilization {gpu_memory_utilization} \
     --enable-auto-tool-choice \
     --reasoning-parser qwen3 \
-    --tool-call-parser qwen3_coder \
+    --tool-call-parser qwen3_xml \
     --kv-cache-dtype fp8 \
     --load-format fastsafetensors \
     --attention-backend flashinfer \

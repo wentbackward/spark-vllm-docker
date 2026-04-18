@@ -1,0 +1,35 @@
+# Recipe: google/gemma-4-26B-A4B-it
+# Gemma 4 MoE: 25.2B total / 3.8B active, multimodal (text + image)
+# 256K context, native tool calling, thinking mode
+
+recipe_version: "1"
+name: Gemma-4-26B-A4B
+description: vLLM serving Gemma-4-26B-A4B-it (MoE, 3.8B active)
+
+model: protoLabsAI/gemma-4-26B-A4B-it-FP8
+
+container: vllm-node
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.45
+  max_model_len: 131072
+  max_num_batched_tokens: 16384
+
+command: |
+  vllm serve protoLabsAI/gemma-4-26B-A4B-it-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser functiongemma \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --enforce_eager \
+    -tp {tensor_parallel}
