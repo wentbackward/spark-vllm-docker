@@ -1,0 +1,43 @@
+# Recipe: Qwen/Qwen3.6-35B-A3B-FP8
+# Qwen3.6-35B-A3B model in native FP8 format
+# Uses vllm-node-tf5 (latest transformers/vLLM)
+
+recipe_version: "1"
+name: Qwen36-35B-A3B
+description: vLLM serving Qwen3.6-35B-A3B-FP8
+
+model: Qwen/Qwen3.6-35B-A3B-FP8
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.5-chat-template
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.40
+  max_model_len: 131072
+  max_num_batched_tokens: 16384
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_xml \
+    --kv-cache-dtype fp8 \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --enable-prefix-caching \
+    --chat-template unsloth.jinja \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":1}}' \
+    -tp {tensor_parallel}
