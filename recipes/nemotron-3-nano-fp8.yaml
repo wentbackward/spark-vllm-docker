@@ -1,0 +1,45 @@
+# Recipe: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
+# Official NVIDIA FP8 quant via ModelOpt (~30 GiB weights)
+# Mamba SSM conv1d + 6 attention layers kept in BF16 for correctness
+# Uses mature FP8 kernels on SM121 — avoids the NVFP4 Marlin correctness issues
+
+recipe_version: "1"
+name: Nemotron-3-Nano-FP8
+description: vLLM serving Nemotron-3-Nano-30B-A3B FP8
+
+model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.30
+  max_model_len: 32768
+  max_num_batched_tokens: 16384
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 \
+    --served-model-name nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --trust-remote-code \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --reasoning-parser nemotron_v3 \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --enforce_eager \
+    --load-format fastsafetensors \
+    -tp {tensor_parallel}

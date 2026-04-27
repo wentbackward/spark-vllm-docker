@@ -1,0 +1,62 @@
+# Recipe: Qwen/Qwen3.6-27B-FP8 + DFlash speculative decoding
+# Draft model: z-lab/Qwen3.6-27B-DFlash (~3.3 GiB head)
+# Goal: validate the 15-30% speedup people report on the NVIDIA forum.
+# Solo for now — once we know DFlash works and is faster, can promote to TP=2.
+
+recipe_version: "1"
+name: Qwen36-27B-FP8-DFlash
+description: vLLM serving Qwen3.6-27B-FP8 with DFlash speculative decoding
+
+model: Qwen/Qwen3.6-27B-FP8
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.5-chat-template
+
+defaults:
+  port: 3041
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.7
+  max_model_len: 262144
+  max_num_batched_tokens: 32768
+  max_num_seqs: 4
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
+
+# Notes:
+# --speculative-config method=dflash with the z-lab head and 15 spec tokens
+#   matches the upstream recipe author's settings.
+# --override-generation-config drops min_p (vLLM's spec-decode path rejects it
+#   even at 0.0); keeps Qwen's recommended temp/top_p/top_k.
+# --attention-backend flash_attn + bf16 KV (no --kv-cache-dtype fp8). Reason:
+#   DFlash needs non-causal attention for the draft head. flashinfer rejects
+#   non-causal; flash_attn supports it but rejects fp8 KV. Pick flash_attn and
+#   eat the 2x KV memory — we have headroom at 0.7 util.
+command: |
+  vllm serve Qwen/Qwen3.6-27B-FP8 \
+    --served-model-name Qwen/Qwen3.6-27B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --language-model-only \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --load-format fastsafetensors \
+    --attention-backend flash_attn \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template unsloth.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":15}}' \
+    --generation-config auto \
+    --override-generation-config '{{"temperature":0.6,"top_p":0.95,"top_k":20,"presence_penalty":0.0,"repetition_penalty":1.0}}' \
+    -O3 \
+    -tp {tensor_parallel}
