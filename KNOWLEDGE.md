@@ -188,6 +188,20 @@ must NOT include `--distributed-executor-backend ray`.
 
 This stops both the head and worker containers cleanly.
 
+### Load balancing across replicas (DP-style)
+
+When the same model name is served by multiple replicas (e.g. one MTP
+endpoint on each Spark for capacity), the **llm-proxy** layer distributes
+requests with affinity-aware routing. Design owned by the llm-proxy repo;
+a reference copy lives at [`docs/LOAD-BALANCING.md`](./docs/LOAD-BALANCING.md).
+
+Why it matters for serving here: vLLM's prefix cache is per-replica, so a
+multi-turn coding session bouncing between backends pays full prefill
+every turn. Proper sticky routing preserves cache hits and turns each
+session's TTFT from seconds back to milliseconds. See `docs/LOAD-BALANCING.md`
+§ "How the cache actually works" for the underlying mechanism, and the
+phasing plan if you're implementing or extending it.
+
 ---
 
 ## 4. Models
