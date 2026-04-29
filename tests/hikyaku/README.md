@@ -153,6 +153,157 @@ Assuming defaults (`ttft=20 ms`, `tpot=5 ms`, `response-tokens=50`):
   100%, the affinity-key hash isn't stable across turns of the same
   session — likely a bug in canonical-prefix derivation.
 
+## Locust load testing — stress mode (`locustfile.py`)
+
+`latency_harness.py` is good for correctness validation but caps out at
+low concurrency. To find hikyaku's RPS ceiling and tail-latency
+behavior under real load, use Locust.
+
+### What Locust is
+
+Locust is a Python-based load-testing tool. You write one Python file
+describing one user's behavior; Locust spins up many such users in
+parallel against your service. Live stats (RPS, percentile latencies,
+error rate) appear in a browser at `http://localhost:8089`.
+
+It scales to thousands of concurrent users on a single machine — far
+beyond what asyncio harnesses can drive — and is the industry
+standard for HTTP service stress testing.
+
+### Install
+
+```bash
+pip install locust
+```
+
+(Pulls in gevent + flask. ~30 MB total.)
+
+### Run interactively (web UI, recommended for first runs)
+
+```bash
+locust -f locustfile.py --host http://limone.royal-armadillo.ts.net:4000
+```
+
+Then open `http://localhost:8089`. Set:
+
+- **Number of users**: how many concurrent simulated users
+- **Spawn rate**: users started per second (ramp-up)
+
+Click **Start** and watch live stats. Stop the test from the UI; backend
+distribution + affinity hit rate (if affinity mode) print to the
+terminal.
+
+### Run headless (no UI, for scripted runs)
+
+```bash
+locust -f locustfile.py --host http://limone.royal-armadillo.ts.net:4000 \
+  --headless --users 1000 --spawn-rate 100 --run-time 60s
+```
+
+Stops automatically after `--run-time`. Final stats print to stdout.
+
+### Modes (set via env var)
+
+```bash
+# Independent mode (default) — fresh prompt per request, tests RPS + distribution
+HIKYAKU_MODE=independent locust -f locustfile.py --host http://...
+
+# Affinity mode — multi-turn sessions, tests stickiness under load
+HIKYAKU_MODE=affinity HIKYAKU_TURNS=4 locust -f locustfile.py --host http://...
+```
+
+### Payload sizes
+
+```bash
+# Minimal — ~20 byte prompts; finds raw RPS ceiling
+HIKYAKU_PAYLOAD=minimal locust -f locustfile.py --host http://...
+
+# Small (default) — ~80 byte prompts; realistic light request
+HIKYAKU_PAYLOAD=small locust -f locustfile.py --host http://...
+
+# Large — 50 KB system prompts; tests proxy parsing + affinity hashing
+# under sustained load
+HIKYAKU_PAYLOAD=large locust -f locustfile.py --host http://...
+```
+
+### Recommended scenarios
+
+#### Find RPS ceiling
+
+Tune the fakes for near-zero latency first so the proxy is the
+bottleneck, not the fakes:
+
+```bash
+./fake_llm.py --id test1 --port 9001 --ttft-ms 1 --tpot-ms 0 --response-tokens 1 &
+./fake_llm.py --id test2 --port 9002 --ttft-ms 1 --tpot-ms 0 --response-tokens 1 &
+
+HIKYAKU_PAYLOAD=minimal HIKYAKU_MAX_TOKENS=1 \
+locust -f locustfile.py --host http://hikyaku:4000 \
+  --headless --users 2000 --spawn-rate 200 --run-time 60s
+```
+
+Watch CPU, p95, p99. The number of users where p95 spikes is your
+saturation point.
+
+#### Affinity under load
+
+Verify sticky-with-hashing holds when many sessions run concurrently:
+
+```bash
+HIKYAKU_MODE=affinity HIKYAKU_TURNS=10 \
+locust -f locustfile.py --host http://hikyaku:4000 \
+  --headless --users 200 --spawn-rate 20 --run-time 120s
+```
+
+Each "user" runs sessions of 10 turns. After the run, look for:
+
+- `Affinity hit rate: X/Y = NNN.N% (PASS)` ≥ 95%
+- Per-route distribution evenness (each backend within ±10%)
+
+#### Realistic mixed load
+
+Add some think time between requests for a more realistic profile —
+edit `wait_time = between(0, 0)` in `locustfile.py` to e.g.
+`between(0.5, 2.0)`.
+
+### What to look for in the output
+
+Locust shows live, per-second:
+
+- **RPS** — requests per second sustained
+- **Failures/s** — anything non-200 from hikyaku
+- **Median / p95 / p99** — latency percentiles
+- **Total** — cumulative count
+
+After the run, the terminal prints:
+
+```
+============================================================
+ hikyaku load test — final tallies
+============================================================
+
+Backend distribution (60123 requests):
+  test1                     30055   50.0%  #########################
+  test2                     30068   50.0%  #########################
+
+Affinity hit rate: 1024/1024 = 100.0%  (PASS)
+```
+
+### How this complements `latency_harness.py`
+
+| | `latency_harness.py` | Locust |
+|---|---|---|
+| Purpose | Correctness | Stress / capacity |
+| Max concurrency | ~50 (asyncio) | Thousands (gevent) |
+| Output | Single summary table | Live dashboard + final tallies |
+| Affinity check | ✓ | ✓ |
+| RPS ceiling | weak | strong |
+| Setup time | none | `pip install locust` |
+| Best for | "does it route correctly?" | "how fast before it breaks?" |
+
+Use both. `latency_harness.py` for the correctness gates;
+`locustfile.py` for the capacity/RPS story.
+
 ## Stress-testing tips
 
 - **Crank concurrency** to find the proxy's CPU ceiling on whatever
