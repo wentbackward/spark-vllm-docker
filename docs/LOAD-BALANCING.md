@@ -96,8 +96,8 @@ routes:
       #   round_robin         — simple distribution, no affinity (cache-cold)
       #   single              — single backend (existing behavior)
     affinity:
-      key: canonical_prefix      # canonical_prefix | header:NAME | none
-      prefix_bytes: 1024         # for canonical_prefix only
+      key: first_user_message    # first_user_message | header:NAME | none
+      max_content_bytes: 2048    # safety cap on hashed content
       ttl_seconds: 3600          # evict idle entries after this
       max_entries: 10000         # LRU cap
     overload:                    # used by sticky_least_loaded to bail off pin
@@ -211,64 +211,74 @@ type AffinityTable struct {
 
 ## Affinity key computation
 
-For `key: canonical_prefix`, build a deterministic byte representation of
-the leading conversation, hash with xxhash64:
+For `key: first_user_message`, hash the **first user message's content**
+with xxhash64. Skip the system message and any subsequent turns.
 
 ```go
-const (
-    UnitSeparator    = '\x1f'
-    RecordSeparator  = '\x1e'
-)
-
-func canonicalPrefix(messages []Message, n int) []byte {
-    var buf bytes.Buffer
-    buf.Grow(n)
-    for _, m := range messages {
-        buf.WriteString(m.Role)
-        buf.WriteByte(UnitSeparator)
-        // Content can be a string or a multipart array of parts.
-        // For multipart, concatenate the text parts in order.
-        buf.WriteString(stringifyContent(m.Content))
-        buf.WriteByte(RecordSeparator)
-        if buf.Len() >= n {
-            break
-        }
-    }
-    out := buf.Bytes()
-    if len(out) > n {
-        out = out[:n]
-    }
-    return out
-}
-
 func affinityKey(req Request) string {
-    if len(req.Messages) == 0 {
-        return ""  // no key → fall through to least-loaded
+    for _, m := range req.Messages {
+        if m.Role != "user" {
+            continue   // skip system / prior assistant / tool turns
+        }
+        content := stringifyContent(m.Content)
+        if len(content) > cfg.MaxContentBytes {
+            content = content[:cfg.MaxContentBytes]   // safety cap, e.g. 2048
+        }
+        h := xxhash.Sum64String(content)
+        return strconv.FormatUint(h, 16)  // 16-char hex key
     }
-    prefix := canonicalPrefix(req.Messages, cfg.PrefixBytes)
-    h := xxhash.Sum64(prefix)
-    return strconv.FormatUint(h, 16)  // 16-char hex key
+    return ""   // no user message → fall through to least-loaded
 }
 ```
 
 ### Why this fingerprint
 
-- **Walks `messages[]` in order**, mirroring how the chat template lays
-  out tokens. Same session always produces the same leading bytes
-  regardless of how many turns deep it is.
-- **Captures both system prompt and first user turn** in the typical
-  1024-byte window. Sessions sharing a system prompt naturally coalesce
-  to the same backend, amortizing the system-prompt KV.
-- **Distinguishes sessions by their opening user prompt** once they've
-  diverged past the system prompt.
-- **Resilient to:** missing system prompt (just hashes the user message),
-  multiple system prompts, multipart content (text parts concatenated).
+- **Stable across all turns of a session.** The first user message is
+  set once (the opening prompt) and remains the same in every subsequent
+  request as the conversation grows. New turns append to `messages[]`
+  but the first user message is invariant.
+- **Different across distinct sessions.** Each session opens with a
+  unique user prompt, so the hash distinguishes them naturally.
+- **Skips the system message.** System prompts are usually shared across
+  sessions of the same client/route, so hashing them would collapse
+  many distinct sessions to the same backend. Skipping system means
+  cache locality across sessions for the system-prompt KV is preserved
+  *probabilistically* (sessions land on a few backends, all of which
+  cache the system prompt after the first request) without being a
+  hard pin.
+- **Skips assistant/tool turns.** These vary across turns within one
+  session, so including them would make the hash unstable.
+- **Costs ~µs per request.** Hashing 1-2 KB with xxhash is essentially
+  free; no JSON encoding of the whole body.
+- **Resilient to:** multipart content (text parts concatenated),
+  missing system prompt (handles the no-system case identically),
+  multiple system prompts.
 - **Vulnerable to:** intentional history truncation (CLI drops oldest
-  turns when context grows). When the leading bytes shift, affinity
-  re-keys and may flip backend. By that point the session is many turns
-  in, prefix cache is hot on the original backend, and a flip is costly.
-  Mitigation: optional second fingerprint (last user message hash) for
-  re-pinning on long sessions; defer to Phase 2 unless observed.
+  turns when context grows). When the first user message disappears,
+  affinity re-keys to the *new* first user message, possibly flipping
+  backend. By that point the session is many turns deep and the
+  backend's prefix cache is heavily warmed — a flip is expensive.
+  Mitigation: optional second fingerprint (hash of the second-newest
+  user message) for re-pinning on truncated sessions; defer to Phase 2
+  unless observed.
+
+### Note on `key: canonical_prefix` (deprecated)
+
+An earlier version of this spec proposed hashing a "leading byte
+prefix" of `messages[]`, capped at `prefix_bytes` (default 1024).
+That algorithm has two failure modes:
+
+- **Short conversations** (< prefix_bytes total): the byte cap never
+  triggers, so the loop walks the entire `messages[]` array and the
+  hash *changes every turn*. Affinity breaks.
+- **Long conversations sharing a system prompt** (>= prefix_bytes
+  in the system message alone): the cap triggers inside the system
+  message, so all sessions sharing that system prompt hash to the
+  same key. Sessions collapse onto one backend.
+
+Test results showed ~44% sticky rate with the short-conversation case
+under the test harness, exactly as predicted. Use `first_user_message`
+instead.
 
 ### `key: header:NAME`
 
@@ -280,7 +290,7 @@ affinity:
 ```
 
 Look up `req.Headers["X-Session-Id"]`, lowercase trim, use as the affinity
-key directly. Falls through to `canonical_prefix` if the header is absent.
+key directly. Falls through to `first_user_message` if the header is absent.
 
 ### `key: none`
 
@@ -353,17 +363,73 @@ func pickLeastLoaded(pool []*Backend) *Backend {
 
 ## Health checking
 
-A simple loop, one goroutine per backend:
+Health derives from whichever signal is available, in this priority:
+
+1. **Metrics-as-health (preferred when scraping is enabled).** If
+   `metrics_scrape.enabled` is true AND the capability probe succeeded
+   on this backend, the metrics scrape *is* the health signal. A
+   successful scrape (200 + parseable Prometheus text) every interval
+   = healthy; consecutive scrape failures count toward
+   `unhealthy_after`. Don't run a separate `/models` check.
+
+2. **`/models` fallback (when metrics aren't available).** Backends
+   without a working `/metrics` endpoint fall back to a dedicated
+   `/models` poll using the dedicated health-check loop. Same
+   `unhealthy_after` semantics, separate goroutine.
+
+The reason: metrics scraping is *strictly more informative* than a
+`/models` poll. A successful scrape proves the HTTP server is alive,
+the response format is valid (no panic, no GC stall mid-emit), and you
+get fresh load data. Hitting `/models` separately every health interval
+is redundant work once `/metrics` is established as a per-tick
+heartbeat.
 
 ```go
-func healthLoop(b *Backend, route Route) {
+// One goroutine per backend handles BOTH scraping and health for that
+// backend. The goroutine is selected at startup based on capability:
+func runBackendLoop(b *Backend, route Route) {
+    if b.MetricsEnabled {
+        runMetricsAndHealthLoop(b, route)   // scrape /metrics, health derived
+    } else {
+        runHealthOnlyLoop(b, route)         // poll /models
+    }
+}
+
+func runMetricsAndHealthLoop(b *Backend, route Route) {
+    ticker := time.NewTicker(route.MetricsScrape.Interval)
+    defer ticker.Stop()
+    for range ticker.C {
+        text, err := scrapeMetrics(b.URL + route.MetricsScrape.Path)
+        if err != nil {
+            b.ConsecutiveFailures++
+            if b.ConsecutiveFailures >= route.HealthCheck.UnhealthyAfter {
+                b.Healthy = false
+            }
+            continue
+        }
+        running, waiting, kvPct, ok := parseMetrics(text, b.EngineType)
+        if !ok {
+            b.ConsecutiveFailures++
+            if b.ConsecutiveFailures >= route.HealthCheck.UnhealthyAfter {
+                b.Healthy = false
+            }
+            continue
+        }
+        b.RunningReqs = running
+        b.WaitingReqs = waiting
+        b.KVCachePct = kvPct
+        b.LastMetricsUpdate = time.Now()
+        b.Healthy = true
+        b.ConsecutiveFailures = 0
+    }
+}
+
+func runHealthOnlyLoop(b *Backend, route Route) {
     ticker := time.NewTicker(route.HealthCheck.Interval)
     defer ticker.Stop()
     for range ticker.C {
-        ctx, cancel := context.WithTimeout(context.Background(), route.HealthCheck.Timeout)
-        resp, err := http.Get(b.URL + route.HealthCheck.Path)
-        cancel()
-
+        resp, err := httpGetWithTimeout(b.URL + route.HealthCheck.Path,
+                                        route.HealthCheck.Timeout)
         if err == nil && resp.StatusCode == 200 {
             b.Healthy = true
             b.ConsecutiveFailures = 0
@@ -371,7 +437,6 @@ func healthLoop(b *Backend, route Route) {
             b.ConsecutiveFailures++
             if b.ConsecutiveFailures >= route.HealthCheck.UnhealthyAfter {
                 b.Healthy = false
-                log.Printf("backend %s marked unhealthy: %v", b.URL, err)
             }
         }
         if resp != nil {
@@ -387,32 +452,20 @@ cache once it's available again.
 
 ## Metrics scraping (when enabled)
 
-```go
-func metricsLoop(b *Backend, route Route) {
-    ticker := time.NewTicker(route.MetricsScrape.Interval)
-    defer ticker.Stop()
-    for range ticker.C {
-        text, err := scrapeMetrics(b.URL + route.MetricsScrape.Path)
-        if err != nil {
-            // Don't disable; just leave LastMetricsUpdate stale.
-            // Stale-threshold logic in isOverloaded handles it.
-            continue
-        }
-        running, waiting, kvPct, ok := parseMetrics(text, b.EngineType)
-        if !ok {
-            continue
-        }
-        b.RunningReqs = running
-        b.WaitingReqs = waiting
-        b.KVCachePct = kvPct
-        b.LastMetricsUpdate = time.Now()
-    }
-}
-```
+Metrics scraping happens inside `runMetricsAndHealthLoop` (see "Health
+checking" above) — there's no separate metrics goroutine. Each tick
+hits `/metrics`, parses the response, updates the load gauges on the
+`Backend` struct, AND maintains the health signal. One round-trip per
+interval per backend covers both concerns.
 
 `parseMetrics` is a simple line scanner over Prometheus text format; no
 need for a full Prometheus client library. Match by metric name (per the
-mapping table above), pick the gauge value.
+[mapping table](#backend-capability-probing)), pick the gauge value.
+
+If the capability probe at startup didn't find a parseable `/metrics`
+response, this backend gets the `/models`-only health loop instead and
+never has live load gauges — `isOverloaded` and `pickLeastLoaded` fall
+back to the local `InFlightLocal` counter for that backend.
 
 ## Failure modes and behavior
 
@@ -424,7 +477,7 @@ mapping table above), pick the gauge value.
 | All backends overloaded | Pick least-bad (smallest `load_score`). Don't 503; the queue at the backend is faster than tearing down and retrying. |
 | Metrics endpoint flaps | Use last-known values until `stale_threshold_seconds`, then defer to local in-flight count. |
 | New backend added via SIGHUP reload | Probe metrics, start health-check loop, mark healthy after first OK probe. Affinity entries pinned to *removed* backends should be evicted on reload. |
-| Burst of new sessions arriving simultaneously | Each gets a fresh affinity key (by canonical_prefix); least-loaded distributes them. Affinity entries created in a tight window can briefly imbalance — this is fine, settles within a few seconds. |
+| Burst of new sessions arriving simultaneously | Each gets a fresh affinity key (hash of first user message); least-loaded distributes them. Affinity entries created in a tight window can briefly imbalance — this is fine, settles within a few seconds. |
 | Two sessions with identical opening prompts | Same affinity key → both pin to same backend. Cache locality across sessions is actually a *feature* here. Slight contention; not catastrophic. |
 
 ## Request defenders
@@ -603,7 +656,7 @@ These let the operator see how often defenders fire without scraping logs.
 
 - Multi-backend per route in config
 - Health check loop
-- `sticky_least_loaded` strategy with `canonical_prefix` affinity
+- `sticky_least_loaded` strategy with `first_user_message` affinity
 - Local in-flight tracking (`InFlightLocal`) for overload detection
 - No metrics scraping yet — `MetricsEnabled = false` for all backends
 - LRU + TTL on affinity table
@@ -643,6 +696,11 @@ Defender-specific metrics + response headers (see "Observability" above).
   measured CLI behavior, but cheap to add later)
 - Prometheus metrics exposed *by* the proxy itself: routing decisions,
   affinity hit rate, per-backend dispatch counts
+- **Gauge-freshness check**: a backend whose `/metrics` keeps returning
+  200 but whose `vllm:num_requests_running` doesn't change across N
+  scrapes despite the route being busy is probably engine-deadlocked.
+  Mark suspicious; consider draining new affinity until the gauges
+  recover. Defer until a real incident; cheap to add when it matters.
 
 ## Configuration example (full)
 
@@ -671,8 +729,8 @@ routes:
       - url: http://192.168.1.247:3042
     strategy: sticky_least_loaded
     affinity:
-      key: canonical_prefix
-      prefix_bytes: 1024
+      key: first_user_message
+      max_content_bytes: 2048
       ttl_seconds: 3600
       max_entries: 10000
     overload:
@@ -680,14 +738,18 @@ routes:
       kv_cache_pct: 0.85
       stale_metrics_action: pin
     health_check:
-      path: /v1/models
+      # Used only for backends WITHOUT working /metrics. When metrics
+      # scraping is enabled and the capability probe succeeded, the
+      # scrape doubles as the health signal — this block is ignored.
+      path: /models                # default; hikyaku does not auto-add /v1/
       interval_seconds: 10
       timeout_seconds: 2
       unhealthy_after: 3
     metrics_scrape:
-      enabled: auto
+      enabled: auto                # auto = probe and use if available
       interval_seconds: 5
       stale_threshold_seconds: 30
+      # When enabled and successful, this loop also drives health.
     # defenders: inherit globals (no per-route block here)
 
   gresh-general:

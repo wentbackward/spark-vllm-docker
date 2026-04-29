@@ -106,10 +106,13 @@ async def independent_mode(args, sys_prompt):
 async def affinity_mode(args, sys_prompt):
     """N sessions × T turns. Same opening user message per session."""
     sem = asyncio.Semaphore(args.concurrency)
-    connector = aiohttp.TCPConnector(limit=args.concurrency * 2)
 
     async def session(sid):
-        async with aiohttp.ClientSession(connector=connector) as cli:
+        # Each session gets its own ClientSession — realistic (each looks
+        # like a separate client) AND avoids the shared-connector lifetime
+        # bug where the first session to finish would close the connector
+        # for everyone else.
+        async with aiohttp.ClientSession() as cli:
             messages = [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": f"Session {sid}: {SMALL_TURNS[sid % len(SMALL_TURNS)]}"},

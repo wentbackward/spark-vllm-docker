@@ -177,9 +177,13 @@ def main():
     srv = FakeLLMServer(args.id, args.model, args.response_tokens,
                         args.ttft_ms, args.tpot_ms)
     app = web.Application()
+    # Register both /v1/... and stripped /... paths — proxies vary on whether
+    # they pass the version prefix through to the backend.
     app.router.add_get("/v1/models", srv.handle_models)
+    app.router.add_get("/models", srv.handle_models)
     app.router.add_get("/metrics", srv.handle_metrics)
     app.router.add_post("/v1/chat/completions", srv.handle_chat)
+    app.router.add_post("/chat/completions", srv.handle_chat)
 
     print(f"fake_llm id={args.id} listening on {args.host}:{args.port}")
     print(f"  model={args.model}  ttft={args.ttft_ms}ms  tpot={args.tpot_ms}ms  "
