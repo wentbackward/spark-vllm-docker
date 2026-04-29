@@ -40,7 +40,7 @@ This dual-port-on-same-subnet config breaks the repo's `autodiscover.sh`
 ### External services
 
 - **`limone.royal-armadillo.ts.net`** (Jetson Orin Nano) runs the
-  **llm-proxy** that routes client traffic to the right vLLM endpoint by
+  **hikyaku** that routes client traffic to the right vLLM endpoint by
   model name. Proxy is no longer hosted on spark-01 itself.
 - Tailnet: both Sparks are joined and routable by hostname (`paul@spark-02`).
 
@@ -191,8 +191,8 @@ This stops both the head and worker containers cleanly.
 ### Load balancing across replicas (DP-style)
 
 When the same model name is served by multiple replicas (e.g. one MTP
-endpoint on each Spark for capacity), the **llm-proxy** layer distributes
-requests with affinity-aware routing. Design owned by the llm-proxy repo;
+endpoint on each Spark for capacity), the **hikyaku** layer distributes
+requests with affinity-aware routing. Design owned by the hikyaku repo;
 a reference copy lives at [`docs/LOAD-BALANCING.md`](./docs/LOAD-BALANCING.md).
 
 Why it matters for serving here: vLLM's prefix cache is per-replica, so a

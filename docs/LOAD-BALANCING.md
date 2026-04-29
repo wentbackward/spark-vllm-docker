@@ -1,6 +1,6 @@
-# llm-proxy — Load Balancing Design
+# hikyaku — Load Balancing Design
 
-Spec for adding multi-backend load balancing to llm-proxy, with affinity
+Spec for adding multi-backend load balancing to hikyaku, with affinity
 preservation aligned to vLLM/SGLang prefix-cache behavior.
 
 ## Goals (priority order)
@@ -55,7 +55,7 @@ Implications for routing:
 
 ```
 ┌─────────┐      ┌──────────────────────────┐      ┌────────────┐
-│ client  │──┬──▶│  llm-proxy               │──┬──▶│ backend A  │
+│ client  │──┬──▶│  hikyaku                 │──┬──▶│ backend A  │
 └─────────┘  │   │                          │  │   │ vLLM/SGLang│
              │   │  ┌────────────────────┐  │  │   └────────────┘
              │   │  │ affinity table     │  │  │
@@ -427,6 +427,176 @@ mapping table above), pick the gauge value.
 | Burst of new sessions arriving simultaneously | Each gets a fresh affinity key (by canonical_prefix); least-loaded distributes them. Affinity entries created in a tight window can briefly imbalance — this is fine, settles within a few seconds. |
 | Two sessions with identical opening prompts | Same affinity key → both pin to same backend. Cache locality across sessions is actually a *feature* here. Slight contention; not catastrophic. |
 
+## Request defenders
+
+A pair of pre-routing checks that run **before** backend selection and can
+short-circuit obviously-pathological requests. Both are independently
+configurable: a global default + a per-route override (per-route wins).
+
+The two defenders address different failure modes that can't be fixed at
+the sampler level:
+
+- **Loop detection** — the same request body is being re-sent repeatedly
+  by an agent's retry loop, producing the same model output, accomplishing
+  nothing but burning tokens.
+- **Zero-content detection** — the request carries a huge system prompt
+  and tool definitions but the actual user content is empty or trivial,
+  meaning tens of thousands of tokens get processed with no useful work
+  attached.
+
+### Detection signals (live-observed)
+
+The signature of an agent retry loop, captured in production:
+
+```
+Engine 000: Running: 0-1, KV cache: 11.2%, Prefix cache hit rate: 97.6%
+SpecDecoding: Mean acceptance length: 3.00 (max), per-position 1.000, 1.000
+              Avg Draft acceptance rate: 100.0%
+Repeated request: same `(affinity_key, hash(messages[-1]))` ≥ 3 times in 60s
+```
+
+100% MTP acceptance + ~98% prefix cache hit + identical body hash on
+consecutive requests is the canonical signature. It cannot occur in
+healthy multi-turn work — even the most predictable boilerplate output
+doesn't sustain 100% draft acceptance for long.
+
+The proxy doesn't need MTP metrics to detect this — it can use **just the
+request body hash repetition** as the primary signal, with backend
+metrics (cache hit rate, acceptance) as an optional confirmation when
+they're available.
+
+### Loop detection
+
+**Signal:** the same `(affinity_key, hash(messages[-1].content))` arrives
+≥ N times within a sliding window. Default N=3, window=60s.
+
+Why hash only the last user message rather than the full body: the prior
+turns are by definition shared (it's a multi-turn conversation), so the
+full body always "matches" in some sense. The last user message is the
+delta that the agent is asking the model to act on. If that delta is
+identical across consecutive requests, the agent is asking the same
+question repeatedly.
+
+**State:**
+
+```go
+type LoopState struct {
+    LastBodyHash    string
+    Count           int
+    FirstSeen       time.Time
+}
+// Map: (affinityKey, lastUserMsgHash) → LoopState
+// LRU + TTL bounded.
+```
+
+**Action choices** (configurable, default `inject_forcing_message`):
+
+- `inject_forcing_message` — before forwarding the Nth identical request,
+  prepend a system message:
+  > "Your previous N attempts of this exact request returned the same
+  > result. Stop retrying. Either fix the underlying issue (e.g. read
+  > the tool's error output and address it directly) or stop and surface
+  > to the human."
+  After injection, reset the counter for that key. If a further M
+  identical requests arrive after the injection, escalate to `refuse_429`.
+- `refuse_429` — return HTTP 429 with a structured error explaining the
+  loop was detected. Client sees an explicit failure rather than a
+  silent token burn.
+- `drain_to_idle` — let the request through but lower its routing priority
+  and prefer pinning to a backend with idle capacity, isolating the
+  burning session from healthy traffic.
+
+`inject_forcing_message` is the recommended default — it gives the agent
+a chance to break out of the loop using its existing reasoning path,
+rather than failing the request hard.
+
+### Zero-content detection
+
+**Signal:** the request's effective user content is below a threshold
+relative to the total token cost. Concretely:
+
+- `len(stripped(last_user_message.content)) < min_user_content_chars`
+  (default `min_user_content_chars=10`)
+- Combined with substantial system + tool overhead in the same request
+  (e.g. `total_input_tokens >= 2000` to avoid flagging genuinely small
+  requests).
+
+This catches the openclaw-style pattern of periodically re-sending the
+full system prompt + tool definitions with no actual user query attached
+— tens of thousands of input tokens processed for no useful output.
+
+**Action choices** (configurable, default `refuse_400`):
+
+- `refuse_400` — return HTTP 400 with body explaining "no user content".
+  Cheapest; client should retry with content.
+- `inject_minimal_response` — return an empty assistant message via the
+  proxy without hitting the backend. Client sees a 200 OK with no
+  generated tokens; backend is never bothered. Useful when the client
+  can't be modified to handle 400s gracefully.
+
+`refuse_400` is the preferred default — it surfaces the bug to the
+caller, which is more informative than silent suppression.
+
+### Configuration
+
+Both defenders share the same on/off switch shape: a top-level default
+plus per-route opt-out/opt-in.
+
+```yaml
+defenders:                      # global defaults
+  loop_detection:
+    enabled: true
+    consecutive_threshold: 3
+    window_seconds: 60
+    action: inject_forcing_message
+    escalate_after: 2           # if forcing message doesn't break it
+    escalate_action: refuse_429
+  zero_content_detection:
+    enabled: true
+    min_user_content_chars: 10
+    min_total_input_tokens: 2000
+    action: refuse_400
+
+routes:
+  gresh-coder:
+    # ... routing config ...
+    defenders:                  # per-route override (any key absent → inherit global)
+      loop_detection:
+        enabled: true           # explicit; matches global
+      zero_content_detection:
+        enabled: false          # opt out for this route specifically
+```
+
+**Resolution rule:** for each defender at request time, look up the
+per-route block first; fall back to the global default if absent.
+Per-route `enabled: false` always wins, even if global is `true`. There
+is no inheritance of inner fields — if a route specifies a defender, it
+must specify all the fields it cares about (or the global defaults
+apply for missing fields, which is the usual YAML merge behavior).
+
+### Implementation order
+
+Both defenders are independently implementable and can land in any
+phase. Because zero-content detection is already implemented (currently
+always-on), the proxy work is just wiring it into the new global +
+per-route config and exposing the on/off switches. Loop detection is
+new code: the body-hash + counter map + injection logic.
+
+### Observability
+
+Each defender should emit proxy-side metrics:
+
+- `hikyaku_loop_detection_triggered_total{route="..."}`
+- `hikyaku_loop_detection_escalated_total{route="..."}`
+- `hikyaku_zero_content_blocked_total{route="..."}`
+
+And add headers on outgoing responses for debugging:
+
+- `X-hikyaku-defender: loop_detection_inject` (when intervention fires)
+- `X-hikyaku-defender: zero_content_blocked` (when zero-content rejects)
+
+These let the operator see how often defenders fire without scraping logs.
+
 ## Phasing
 
 ### Phase 1 — MVP (~1 day)
@@ -448,6 +618,21 @@ preserves cache locality.
 - Switch `pickLeastLoaded` and `isOverloaded` to use scraped metrics
 - `stale_metrics_action` config
 
+### Phase 2.5 — Request defenders (~1 day)
+
+Can land alongside Phase 1 or Phase 2; doesn't depend on telemetry
+scraping. Two independent pieces:
+
+- **Wire zero-content detection** into the global+per-route config
+  pattern. Existing implementation just needs a config switch and the
+  resolution rule (per-route → global → off).
+- **Add loop detection**: body-hash counter map (LRU-bounded, TTL-evicted),
+  forcing-message injector, escalation to `refuse_429` if the injection
+  doesn't break the loop. Reuses the same affinity-key derivation as
+  `sticky_least_loaded`.
+
+Defender-specific metrics + response headers (see "Observability" above).
+
 ### Phase 3 — Polish (optional)
 
 - Drain mode (mark a backend "draining" before stopping it; existing
@@ -463,6 +648,20 @@ preserves cache locality.
 
 ```yaml
 listen: 0.0.0.0:4000
+
+defenders:                      # global defaults; routes can override per-key
+  loop_detection:
+    enabled: true
+    consecutive_threshold: 3
+    window_seconds: 60
+    action: inject_forcing_message
+    escalate_after: 2
+    escalate_action: refuse_429
+  zero_content_detection:
+    enabled: true
+    min_user_content_chars: 10
+    min_total_input_tokens: 2000
+    action: refuse_400
 
 routes:
   gresh-coder:
@@ -489,6 +688,7 @@ routes:
       enabled: auto
       interval_seconds: 5
       stale_threshold_seconds: 30
+    # defenders: inherit globals (no per-route block here)
 
   gresh-general:
     # 35B currently single-replica — strategy: single is the existing path
@@ -496,6 +696,10 @@ routes:
     backends:
       - url: http://192.168.1.247:3040
     strategy: single
+    defenders:
+      zero_content_detection:
+        enabled: false          # this route legitimately receives content-light
+                                # warm-up requests; suppress the global default
 ```
 
 ## Test plan
@@ -516,11 +720,26 @@ routes:
    probe runs, new backend picks up new sessions, existing pins remain.
 8. **Load**: 100 sessions, 5 backends, mixed turn lengths. Distribution
    within ±10% of perfect, affinity hit rate above 95%.
+9. **Defender unit**: `loop_detection` counter increments on identical
+   `(key, body_hash)` arrivals; resets after `inject_forcing_message`
+   fires; escalates to `refuse_429` on `escalate_after` further
+   identical arrivals.
+10. **Defender unit**: `zero_content_detection` flags a request where
+    `last_user_message.content` is whitespace-only or shorter than
+    `min_user_content_chars`, AND total input is over
+    `min_total_input_tokens`. Doesn't flag short-but-meaningful queries
+    on small overall context.
+11. **Defender integration**: per-route `enabled: false` overrides
+    `enabled: true` global. Inverse direction also works.
+12. **Defender integration**: when loop detection injects a forcing
+    message, the forwarded body to the backend is correctly augmented;
+    the response's `X-hikyaku-defender` header is set; the metric
+    counter increments.
 
 ## Open questions for implementation
 
 - Should affinity hits / misses be observable as proxy metrics? (Phase 3)
-- Should the proxy report `X-llm-proxy-backend` header on responses for
+- Should the proxy report `X-hikyaku-backend` header on responses for
   client-side debugging? Useful but trivial to add.
 - Should there be a `force_backend` query param / header for admin
   override of routing during debugging?
