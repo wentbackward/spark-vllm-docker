@@ -1,0 +1,43 @@
+# Recipe: Qwen/Qwen2.5-VL-3B-Instruct
+# Smaller, faster sibling of Qwen2.5-VL-7B — first-class vLLM support
+# (no --trust-remote-code needed, no custom modeling hijinks).
+# ~6 GiB FP16 weights — plenty of headroom alongside everything else.
+
+recipe_version: "1"
+name: Qwen2.5-VL-3B
+description: vLLM serving Qwen2.5-VL-3B-Instruct (vision-language)
+
+model: Qwen/Qwen2.5-VL-3B-Instruct
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 3043
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.10
+  max_model_len: 16384
+  max_num_batched_tokens: 8192
+  max_num_seqs: 8
+
+env:
+  HF_HUB_OFFLINE: 1
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
+    --served-model-name Qwen/Qwen2.5-VL-3B-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    -tp {tensor_parallel}

@@ -1,8 +1,11 @@
 # Project guidance for AI assistants
 
-**Read [`KNOWLEDGE.md`](./KNOWLEDGE.md) first.** It's the durable, repo-bound
-source of truth for hardware, network topology, model choices, recipe
-conventions, benchmark results, and gotchas — built up over many sessions.
+**Read [`KNOWLEDGE.md`](./KNOWLEDGE.md) first** for the durable picture
+and **[`HANDOFF.md`](./HANDOFF.md) second** for what's currently in
+flight and what's next. KNOWLEDGE.md is the durable, repo-bound source
+of truth (hardware, network, model choices, conventions, gotchas).
+HANDOFF.md is a session-bridging brief that goes stale faster — verify
+its claims against current state before acting.
 
 When you learn something durable while working in this repo, **update
 KNOWLEDGE.md** rather than relying on session memory. Knowledge that lives

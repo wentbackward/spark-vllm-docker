@@ -175,6 +175,33 @@ the recipe's `env:` block to prevent vLLM from trying to fetch model
 metadata over HTTP and failing with 401 (especially relevant for gated
 repos like z-lab/Qwen3.6-27B-DFlash).
 
+### Trap: `HF_HUB_OFFLINE=1` + `--trust-remote-code` + custom-code models
+
+A specific failure mode discovered the hard way:
+
+1. `HF_HUB_OFFLINE=1` makes vLLM rewrite the HF model_id to a local
+   snapshot path (`/root/.cache/huggingface/hub/.../snapshots/<sha>/`).
+2. transformers' dynamic-modules loader caches custom Python code at a
+   path *derived from how the model was loaded*:
+   - by HF model_id → `transformers_modules/<owner>/<repo>/<sha>/`
+   - by local path → `transformers_modules/_<sha>/` (leading underscore)
+3. If you pre-populate the cache via `AutoConfig.from_pretrained(<hf_id>)`
+   to seed the modules, but vLLM then loads via the rewritten local
+   path, vLLM hits the `_<sha>/` directory which is **missing the
+   relative-import files** (transformers' resolver doesn't fully
+   populate it for local-path loads).
+4. Symptom: `FileNotFoundError: ... transformers_modules/_<sha>/<file>.py`
+   mid-startup, after the model SAFE-tensors load.
+
+**Fix options:**
+- Drop `HF_HUB_OFFLINE` for that model so vLLM keeps the model_id
+  through the load chain (preferred).
+- After pre-population, copy the populated `<owner>/<repo>/<sha>/`
+  directory contents to `_<sha>/`.
+
+This only bites with `--trust-remote-code` models. Stock-architecture
+models load fine offline.
+
 ### Solo mode
 
 `./run-recipe.py <recipe> --solo` skips Ray and node detection. Solo recipes
@@ -211,8 +238,9 @@ phasing plan if you're implementing or extending it.
 | Model | Quant | Weights | Multimodal | Notes |
 |---|---|---|---|---|
 | Qwen3.6-27B-FP8 | FP8 | ~28 GiB | yes (text-only via `--language-model-only`) | Dense, coding-focused, 256K context |
-| cyankiwi/Qwen3.6-27B-AWQ-INT4 | AWQ-INT4 | ~14 GiB | text-only | Halves bandwidth → ~2× decode (see §5) |
+| cyankiwi/Qwen3.6-27B-AWQ-INT4 | AWQ-INT4 | ~14 GiB | text-only | Halves bandwidth → ~2× decode (see §5). **Use `max_model_len: 196608` (75% of 262K) and MTP `num_speculative_tokens: 2`**. Higher MTP causes output looping on real agentic workloads. |
 | Qwen3.6-35B-A3B-FP8 | FP8 | ~34 GiB | text | MoE, 3B active params, ~3× decode of dense 27B at FP8 |
+| Qwen2.5-VL-3B-Instruct | FP16 | ~6 GiB | yes (vision) | Small fast VLM. First-class vLLM support, no `--trust-remote-code`. |
 
 Served-model-name is independent of the actual model directory.
 By convention all 27B variants serve as `Qwen/Qwen3.6-27B-...` so clients
@@ -231,6 +259,24 @@ don't need to know which quant. To add multiple aliases:
   bad — output quality unusable. Avoid.
 - **NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 / NVFP4**: poor agentic quality on
   this stack as of 2026-04. Recipe retained but model not in active rotation.
+
+### VLMs that DON'T work in vLLM (don't reattempt without fresh evidence)
+
+- **`apple/FastVLM-*`**: architecture `llava_qwen2` not in vLLM's
+  registry; transformers' AutoConfig rejects it before vLLM gets a
+  chance. Apple's research models typically need their reference repo
+  for inference.
+- **`vikhyatk/moondream2`** and **`moondream/moondream-2b-2025-04-14*`**:
+  architecture `HfMoondream` not in vLLM's registry. Even with
+  `trust_remote_code` and dynamic-modules cache populated, vLLM
+  rejects at the architecture-match step. The 4-bit variant
+  additionally pins to an old `torchao` API
+  (`int4_weight_only`) that upstream torchao has renamed.
+
+For small/fast VLM use, **`Qwen2.5-VL-3B-Instruct`** is the validated
+working choice on this stack. Other vLLM-supported small VLMs:
+SmolVLMForConditionalGeneration, PaliGemmaForConditionalGeneration,
+Phi3VForCausalLM, InternVLForConditionalGeneration.
 
 ### Speculative-decode draft models
 
@@ -407,6 +453,7 @@ For a clean A/B (e.g. spec-decode vs not), each instance must have a
 | `qwen3.6-27b-awq-int4-mtp.yaml` | INT4 | qwen3_next_mtp | flashinfer + fp8 KV | AWQ + native MTP |
 | `qwen3.6-27b-awq-int4-dflash.yaml` | INT4 | dflash | flash_attn + bf16 KV | AWQ + DFlash; recommended for agentic coding |
 | `qwen3.6-35b-a3b-fp8.yaml` | FP8 | none | flashinfer + fp8 KV | 35B MoE |
+| `qwen2.5-vl-3b.yaml` | FP16 | none | flashinfer | Vision-language, 3B. Stock vLLM support, no `--trust-remote-code` |
 | `nemotron-3-nano-fp8.yaml` | FP8 | none | — | Not in active use, poor quality |
 
 All recipes default to `--max-num-seqs 4`. Increasing past this risks

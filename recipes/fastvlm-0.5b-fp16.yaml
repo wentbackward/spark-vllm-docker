@@ -1,0 +1,67 @@
+# Recipe: apple/FastVLM-0.5B-fp16
+# Apple's FastVLM with FastViT-HD vision encoder + tiny text decoder.
+# ~1 GiB weights — runs alongside other models with minimal footprint.
+#
+# Compatibility note:
+#   FastVLM uses a custom architecture (FastViT-HD vision encoder, custom
+#   projector). vLLM may or may not have it in the registered model list.
+#   --trust-remote-code is required regardless. Three possible outcomes:
+#
+#     1. Loads cleanly  → working OpenAI-compatible VLM endpoint.
+#     2. "Model architecture FastVLMForCausalLM not supported" (or similar)
+#                       → vLLM doesn't have it yet. Try SGLang or a small
+#                         HF-transformers server instead.
+#     3. Loads but errors mid-prefill on image input
+#                       → partial support; treat as "not supported", same
+#                         fallback path.
+#
+#   Watch the startup logs for the verdict.
+#
+# Notes on flags:
+#   --trust-remote-code        Apple's repo ships custom modeling code.
+#   No --language-model-only:  we WANT the vision encoder for this model.
+#   No --chat-template:        let the model's tokenizer config supply it.
+#   No --enable-auto-tool-choice / --reasoning-parser: FastVLM doesn't
+#                              ship with these capabilities.
+#   No --kv-cache-dtype fp8:   stick with default for unfamiliar models.
+#   --enable-chunked-prefill:  helps vision-token-heavy prefills.
+
+recipe_version: "1"
+name: FastVLM-0.5B
+description: vLLM serving Apple FastVLM-0.5B FP16 (vision-language, multimodal)
+
+model: apple/FastVLM-0.5B-fp16
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 3043
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.10
+  max_model_len: 8192
+  max_num_batched_tokens: 8192
+  max_num_seqs: 8
+
+env:
+  HF_HUB_OFFLINE: 1
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve apple/FastVLM-0.5B-fp16 \
+    --served-model-name apple/FastVLM-0.5B-fp16 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --trust-remote-code \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    -tp {tensor_parallel}

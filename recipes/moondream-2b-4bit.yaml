@@ -1,0 +1,61 @@
+# Recipe: moondream/moondream-2b-2025-04-14-4bit
+# Lightweight 2B-param vision-language model from moondream.ai
+# 4-bit weights — well under 2 GiB. Designed for low-latency VLM use.
+#
+# Compatibility:
+#   Moondream's architecture has been in vLLM for a while (months prior to
+#   this recipe being written). Should load with --trust-remote-code,
+#   no architecture-override gymnastics needed.
+#
+# Quantization is auto-detected from config.json (typically AWQ or
+# bitsandbytes 4-bit). Don't set --quantization explicitly unless vLLM
+# fails to detect.
+#
+# If startup errors, the most common causes are:
+#   - "Architecture Moondream2ForCausalLM not supported"
+#       → vLLM image needs an upgrade (try a fresh pull of vllm-node-tf5,
+#         or build from main)
+#   - Custom config field that vLLM rejects
+#       → may need --hf-overrides; report the error and we can patch
+#   - 4-bit quant format not auto-detected
+#       → add --quantization awq (or bitsandbytes / gptq, per the model card)
+
+recipe_version: "1"
+name: Moondream-2B-4bit
+description: vLLM serving moondream-2b-2025-04-14-4bit (lightweight VLM)
+
+model: vikhyatk/moondream2
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 3043
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.10
+  max_model_len: 8192
+  max_num_batched_tokens: 8192
+  max_num_seqs: 8
+
+env:
+  HF_HUB_OFFLINE: 1
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve vikhyatk/moondream2 \
+    --served-model-name vikhyatk/moondream2 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --trust-remote-code \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    -tp {tensor_parallel}
