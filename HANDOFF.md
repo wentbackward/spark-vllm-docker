@@ -12,6 +12,11 @@ journal). This file is short on purpose — read those for depth.
    Orin Nano). The proxy was renamed from `llm-proxy` to `hikyaku`.
    Design specs live here at `docs/LOAD-BALANCING.md` (a reference
    copy; the canonical home is the hikyaku repo elsewhere).
+   - **UAT certification work happens in `~/hacking/hikyaku-pro`.**
+     For the current state of that effort, read
+     [`hikyaku-pro/HANDOFF.md`](../hikyaku-pro/HANDOFF.md) — that's
+     where the per-scenario verdicts, KNOWN-ISSUES, and Pro-tier
+     requirements drafts live.
 
 ## Current operational state (as of this handoff)
 
@@ -84,21 +89,22 @@ any future benchmarking on a new test rig.
 2. **Wire VLM into hikyaku** as `gresh-vision` route → `spark-02:3043`,
    `strategy: single`. ~3 min on the proxy config + SIGHUP.
 
-### Hikyaku — Phase 2.5 work (defenders)
-3. **Implement loop detection** in hikyaku per
-   `docs/LOAD-BALANCING.md` § Request defenders. Already specced;
-   needs proxy code. The defender harness in `tests/hikyaku/` can
-   exercise it.
-4. **Implement zero-content detection.** User had this as an
-   always-on feature; needs the new global-default + per-route
-   override structure from the spec.
+### Hikyaku — Phase 2.5 work (defenders) — DONE
+Loop detection, zero-content detection, and drop-empty all landed in
+`v0.4.0-dev.21`–`v0.4.0-dev.23` and are verified by
+`hikyaku-pro/scenarios/{06,07,08}-defender-*`. Suite is 9/9 PASS on
+dev.23 (2nd rebuild). See `hikyaku-pro/HANDOFF.md` for the next
+hikyaku-side priorities (10-soak, 11/12-perf scenarios, PRO-003
+SLA work).
 
 ### Bigger
-5. **Production-shape benchmark.** Real vLLM upstream, real
+3. **Production-shape benchmark.** Real vLLM upstream, real
    conversation patterns, prefix-cache-aware workload. Validates that
    hikyaku's affinity routing actually delivers the cache-locality
-   benefit it was designed for.
-6. **Multi-instance hikyaku.** Two hikyaku instances behind a TCP
+   benefit it was designed for. *(Partially superseded by the
+   PRO-003 work in hikyaku-pro — but production-shape against real
+   vLLM is still its own thing.)*
+4. **Multi-instance hikyaku.** Two hikyaku instances behind a TCP
    load balancer. Validates routing consistency across replicas.
 
 ## Lessons / gotchas worth knowing
