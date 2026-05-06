@@ -326,6 +326,13 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
 
 - **Long-form decoding (agentic coding, openclaw, long generations)**:
   DFlash + AWQ-INT4. Roughly 4× the decode of no-spec FP8.
+  **Caveat for coding workloads:** observed quality issues on coding
+  tasks with this combination on our deployment — analysis suggested
+  the DFlash draft head was trained more on prose than code (Sherlock
+  Holmes novels figured prominently). Online reports vary; treat
+  empirically per workload before committing. The current default for
+  coding is MTP + AWQ-INT4 (~21 t/s) for that reason — the speed
+  trade-off is intentional.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.
