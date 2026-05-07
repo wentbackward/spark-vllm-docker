@@ -392,6 +392,15 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   any new workload, look at the `Avg Draft acceptance rate` in
   `[metrics.py:101] SpecDecoding metrics` log lines — if it sits
   below 30% on real traffic, MTP is the right choice.
+
+  **Real-workload MTP acceptance, observed (2026-05-07):**
+  Compaction-style task on both Sparks under MTP+INT4:
+  - cyankiwi/Qwen3.6-27B-AWQ-INT4 + MTP, coding-heavy, smaller context: **84%**
+  - Intel/Qwen3.6-27B-int4-AutoRound + MTP, design + code-review, larger: **78%**
+  Both well into MTP-favouring territory; the 6-point delta is
+  workload-shape (content type + context size), not a quant-quality
+  signal. Useful data point: AutoRound's MTP heads work, acceptance
+  is in the same band as cyankiwi's.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.
