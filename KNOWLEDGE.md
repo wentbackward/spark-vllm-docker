@@ -360,13 +360,38 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   **Practical-vs-benchmark gap (empirical, 2026-05-07):** on real
   interactive agentic work (planning + coding via pi coder), MTP felt
   *vastly* superior to DFlash despite DFlash's ~70% benchmark decode
-  advantage. The mechanism is DFlash's TTFT variance: benchmark TTFT
-  is 2325 ± **2236** ms (std dev ≈ mean). Each interactive turn pays
-  that tax up front; turn-heavy workflows compound it. DFlash earns
-  its benchmark numbers on sustained long generations where the
-  TTFT becomes a one-time cost amortised over thousands of decode
-  tokens. Treat the speed table as upper bounds for batched decode,
-  not as predictions of felt latency in agentic workflows.
+  advantage — both on TTFT *and* sustained generation. The TTFT side
+  is well-understood (2325 ± **2236** ms std dev ≈ mean, every turn
+  pays the tax). The sustained-generation side is acceptance-rate-
+  driven:
+
+  Each spec-decode step generates `1 + accepted_tokens` at a cost
+  of `target_forward + draft_overhead`:
+
+  | method | step cost | accepted | tokens/step | tokens / unit cost |
+  |---|---|---|---|---|
+  | MTP (`num_spec=2`) | 1.0× | ~1.85 | 2.85 | **2.85** |
+  | DFlash (`num_spec=15`) high-accept | 1.5× | ~7   | 8 | 5.3 |
+  | DFlash low-accept                    | 1.5× | ~3   | 4 | 2.7 |
+  | DFlash very-low-accept               | 1.5× | ~2   | 3 | 2.0 |
+
+  **DFlash beats MTP only above ~25-30% acceptance rate.** Below that,
+  the draft-head overhead and rejection rollback cost outweigh the
+  speculative wins. DFlash's bimodal acceptance (huge ±2.4 t/s
+  variance vs MTP's ±0.7) is the visible signature: workloads where
+  the draft head was well-aligned with the content distribution land
+  in the high-accept regime (60-80%); workloads with code, JSON,
+  tool calls, structured output land in the low-accept regime
+  (15-25%). Synthetic benchmarks (`llama-benchy --pp 512 --tg 256`)
+  produce predictable token sequences that hit the draft head's
+  training distribution; real coding/agentic content rarely does.
+
+  Treat the speed table as upper bounds for batched decode on
+  benchmark-shaped workloads, not as predictions of felt latency or
+  sustained throughput in agentic workflows. To validate DFlash for
+  any new workload, look at the `Avg Draft acceptance rate` in
+  `[metrics.py:101] SpecDecoding metrics` log lines — if it sits
+  below 30% on real traffic, MTP is the right choice.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.
