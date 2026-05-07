@@ -128,6 +128,20 @@ version we're currently on. When it's time to rebuild, skip 0.20 and
 go to 0.21+ (or whatever is then known-good). Re-test eval quality
 on a representative coding task before promoting any new build.
 
+### Tool-call parser: use `qwen3_coder`, not `qwen3_xml`
+
+`qwen3_xml` looks like it improves things on Qwen3.6 — but Qwen
+themselves recommend the latest `qwen3_coder` parser. We previously
+tried `qwen3_xml` and it appeared to help, but the apparent
+improvement was masking the real problem: KV cache running out of
+space. The XML format produces shorter / differently-shaped tool
+calls that fit where the real-format calls didn't. Once context /
+KV sizing was fixed, `qwen3_coder` was correct.
+
+Stick with `--tool-call-parser qwen3_coder` for all Qwen3.6 recipes
+and treat `qwen3_xml`-helps-quality as a smell that points at a
+context/KV problem upstream, not a parser problem.
+
 ### Containers
 
 - **Default container name** from `launch-cluster.sh` is `vllm_node`.
@@ -343,6 +357,16 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   empirically per workload before committing. The current default for
   coding is MTP + AWQ-INT4 (~21 t/s) for that reason — the speed
   trade-off is intentional.
+  **Practical-vs-benchmark gap (empirical, 2026-05-07):** on real
+  interactive agentic work (planning + coding via pi coder), MTP felt
+  *vastly* superior to DFlash despite DFlash's ~70% benchmark decode
+  advantage. The mechanism is DFlash's TTFT variance: benchmark TTFT
+  is 2325 ± **2236** ms (std dev ≈ mean). Each interactive turn pays
+  that tax up front; turn-heavy workflows compound it. DFlash earns
+  its benchmark numbers on sustained long generations where the
+  TTFT becomes a one-time cost amortised over thousands of decode
+  tokens. Treat the speed table as upper bounds for batched decode,
+  not as predictions of felt latency in agentic workflows.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.
