@@ -118,6 +118,16 @@ Current image: **`vllm-node-tf5`** (transformers ≥5, vLLM main).
 Build: `./build-and-copy.sh --tf5 [--copy-to <host>]`. Use
 `--no-build --copy-to ...` to ship an already-built image to a peer.
 
+Currently deployed (as of 2026-05-06): vLLM `0.19.2rc1.dev4+gb5f6c5f83`
+(image built 2026-04-18), torch 2.11.0+cu130, transformers 5.5.4.
+
+**Known-bad: vLLM 0.20.** NVIDIA forum reports of severe quality
+regression on Qwen3.6-27B BF16 and FP8 (eval scores dropping 93→44 /
+100). Affected users downgraded to 0.19.2 — which is exactly the
+version we're currently on. When it's time to rebuild, skip 0.20 and
+go to 0.21+ (or whatever is then known-good). Re-test eval quality
+on a representative coding task before promoting any new build.
+
 ### Containers
 
 - **Default container name** from `launch-cluster.sh` is `vllm_node`.
