@@ -11,7 +11,7 @@ model: cyankiwi/Qwen3.6-27B-AWQ-INT4
 container: vllm-node-tf5
 
 mods:
-  - mods/fix-qwen3.5-chat-template
+  - mods/fix-qwen3.6-chat-template
 
 defaults:
   port: 3042
@@ -43,7 +43,9 @@ command: |
     --attention-backend flashinfer \
     --enable-prefix-caching \
     --enable-chunked-prefill \
-    --chat-template unsloth.jinja \
+    --chat-template qwen3.6.jinja \
     --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
     --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    --generation-config auto \
+    --override-generation-config '{{"temperature":0.6,"top_p":0.95,"top_k":20,"presence_penalty":0.1,"repetition_penalty":1.0}}' \
     -tp {tensor_parallel}

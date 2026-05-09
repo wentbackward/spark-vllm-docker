@@ -1,0 +1,58 @@
+# Recipe: Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound + native MTP.
+#
+# Smaller weights (~21 GiB) than FP8 (~34 GiB) → ~13 GiB more KV-cache
+# budget at the same gmu, which lets us actually use max_num_seqs=4
+# at 65K context without choking the KV pool.
+#
+# Multimodal stays loaded — vision tower is small enough that the int4
+# quant doesn't materially affect its memory.
+#
+# Risk: AutoRound typically quantizes only the LM weights and may strip
+# MTP draft heads. If startup errors with "missing MTP weights" or the
+# spec-decode init fails, fall back: comment out the --speculative-config
+# block. Without MTP we lose ~2× decode speed but everything else works.
+
+recipe_version: "1"
+name: Qwen36-35B-A3B-INT4-MTP
+description: vLLM serving Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound with native MTP, multimodal enabled
+
+model: Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+defaults:
+  port: 3040
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.36
+  max_model_len: 65536
+  max_num_batched_tokens: 16384
+  max_num_seqs: 4
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound \
+    --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype fp8 \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    -tp {tensor_parallel}

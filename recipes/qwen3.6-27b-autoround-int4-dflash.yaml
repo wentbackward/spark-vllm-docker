@@ -1,0 +1,59 @@
+# Recipe: Intel/Qwen3.6-27B-int4-AutoRound + DFlash speculative decoding.
+# Experimental — sibling of qwen3.6-27b-awq-int4-dflash.yaml, swapping the
+# cyankiwi AWQ quant for Intel's AutoRound INT4. AutoRound generally
+# preserves accuracy better at the same bit-width; goal of the test is
+# to see whether DFlash's coding-quality issue (observed empirically with
+# cyankiwi+DFlash, attributed to draft-head training mix) was actually
+# downstream of the AWQ quant rather than the draft model.
+#
+# Default port 3045 / name vllm_test_autoround so the test endpoint runs
+# alongside any prod-shaped 3041/3042 vllm without collision.
+
+recipe_version: "1"
+name: Qwen36-27B-AutoRound-INT4-DFlash
+description: vLLM serving Intel/Qwen3.6-27B-int4-AutoRound with DFlash speculative decoding (test recipe)
+
+model: Intel/Qwen3.6-27B-int4-AutoRound
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+defaults:
+  port: 3045
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.7
+  max_model_len: 262144
+  max_num_batched_tokens: 32768
+  max_num_seqs: 4
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Intel/Qwen3.6-27B-int4-AutoRound \
+    --served-model-name Qwen/Qwen3.6-27B-AutoRound-INT4 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --language-model-only \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --load-format fastsafetensors \
+    --attention-backend flash_attn \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"dflash","model":"z-lab/Qwen3.6-27B-DFlash","num_speculative_tokens":15}}' \
+    --generation-config auto \
+    --override-generation-config '{{"temperature":0.6,"top_p":0.95,"top_k":20,"presence_penalty":0.0,"repetition_penalty":1.0}}' \
+    -O3 \
+    -tp {tensor_parallel}

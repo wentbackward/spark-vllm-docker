@@ -1,0 +1,65 @@
+# Recipe: Intel/Qwen3.6-27B-int4-AutoRound + Qwen native MTP speculative decoding.
+#
+# The bet: AutoRound quant + native MTP heads = AutoRound's quant
+# accuracy with MTP's low TTFT (~1.1s vs DFlash's ~2.3s). Useful for
+# interactive / planning workloads where TTFT dominates felt latency.
+#
+# Risk: AutoRound may have stripped the MTP heads during quantisation.
+# cyankiwi's AWQ explicitly preserved them; Intel's AutoRound is a
+# different team / pipeline. If startup errors with "missing MTP
+# weights" or similar, fall back to AutoRound + DFlash (see the
+# sibling -dflash recipe) or AWQ + MTP (the prod recipe).
+#
+# max_model_len: 262144 (full window). The 75% cap in the AWQ+MTP
+# prod recipe was a CLI-compaction-trigger workaround; with the
+# headroom complaints we've had recently, bump to full and treat the
+# CLI compaction trigger as the user's responsibility.
+
+recipe_version: "1"
+name: Qwen36-27B-AutoRound-INT4-MTP
+description: vLLM serving Intel/Qwen3.6-27B-int4-AutoRound with native MTP speculative decoding
+
+model: Intel/Qwen3.6-27B-int4-AutoRound
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+defaults:
+  port: 3042
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.7
+  max_model_len: 262144
+  max_num_batched_tokens: 32768
+  max_num_seqs: 8
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Intel/Qwen3.6-27B-int4-AutoRound \
+    --served-model-name Qwen/Qwen3.6-27B-AutoRound-INT4 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --language-model-only \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype fp8 \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    --generation-config auto \
+    --override-generation-config '{{"temperature":0.6,"top_p":0.95,"top_k":20,"presence_penalty":0.1,"repetition_penalty":1.0}}' \
+    -tp {tensor_parallel}

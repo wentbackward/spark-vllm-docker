@@ -1,0 +1,61 @@
+# Recipe: Qwen/Qwen3.6-35B-A3B-FP8 with native MTP speculative decoding.
+#
+# Multimodal — vision tower stays loaded (no --language-model-only) so this
+# instance can serve as the VLM for agentic vision workloads. 65K context
+# window (vs 131K default) keeps KV-cache memory headroom comfortable while
+# still being plenty for short interactive turns.
+#
+# Risk: official FP8 ships without MTP heads → startup error like
+# "missing MTP weights". Fall back: drop --speculative-config block.
+
+recipe_version: "1"
+name: Qwen36-35B-A3B-FP8-MTP
+description: vLLM serving Qwen3.6-35B-A3B-FP8 with native MTP, multimodal enabled
+
+model: Qwen/Qwen3.6-35B-A3B-FP8
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+defaults:
+  port: 3040
+  host: 0.0.0.0
+  tensor_parallel: 1
+  # gmu sized to coexist with the 27B-MTP at gmu=0.50 on the same Spark.
+  # vLLM v1 enforces gmu × total ≤ current_free at startup, so we size
+  # below the OS-overhead headroom. Tune up if the 27B is removed.
+  gpu_memory_utilization: 0.36
+  max_model_len: 65536
+  max_num_batched_tokens: 16384
+  # 4 concurrent slots is plenty for serial agentic flows. Multiple
+  # virtual-model routes (thinker, instruct, etc.) share these slots
+  # rather than each spawning a separate 35B instance — see hikyaku
+  # config patterns like gresh-coder vs gresh-coder-moe.
+  max_num_seqs: 4
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+command: |
+  vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
+    --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype fp8 \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    -tp {tensor_parallel}
