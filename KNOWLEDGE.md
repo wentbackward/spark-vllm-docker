@@ -425,20 +425,36 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   ### Methodological note: tokens/s ≠ productivity
 
   Raw decode throughput measures the engine, not the system. When
-  model quality differs, the two diverge sharply: a lower-quality
-  model spends its token budget on circular reasoning, failed tool
-  calls (and the retry-with-a-different-method that follows), and
-  rework on inaccurate changes — so it can have *higher* tokens/s and
-  *lower* useful-work-per-wall-clock-minute. The FP8 vs 4-bit
-  comparison here is the case in point: FP8 at ~15 t/s completes real
-  coding tasks faster than the 4-bit endpoints at ~21 t/s because it
-  generates the right tokens instead of a lot of tokens.
+  model quality differs, the two diverge sharply across at least
+  three axes a t/s number is blind to:
+
+  1. **Token efficiency.** A lower-quality model spends its budget on
+     circular reasoning, failed tool calls (and the retry-with-a-
+     different-method that follows), and rework on inaccurate changes
+     — *higher* t/s, *lower* useful-work-per-minute. FP8 at ~15 t/s
+     completes real coding tasks faster than the 4-bit endpoints at
+     ~21 t/s because it generates the right tokens, not a lot of
+     tokens.
+  2. **Tool-call success rate.** On the 4-bit endpoints roughly every
+     other `edit` tool use failed and needed a different method; on
+     FP8, edits landed first try. Each failed tool call is a wasted
+     round-trip plus the recovery turn.
+  3. **Context-budget efficiency (compactions per unit of work).**
+     Compaction is expensive — a large summarisation generation,
+     fidelity loss (summary < full history), and a slow re-orientation
+     turn afterwards. A worse model bloats the context window faster
+     with the junk from (1) and (2), forcing more compactions.
+     Observed: zero compactions in a day on FP8 vs frequent ones on
+     INT4. (This is also why INT4 kept hitting the ~180K-input
+     compaction wall — it filled context fast enough to keep slamming
+     into it.)
 
   Implication for the PRO-003 perf baseline (hikyaku-pro): the
   headline number should not be tokens/s alone. Where feasible,
-  measure time-to-complete on a fixed real task (or token *budget*
-  consumed to reach a correct result), not just generation rate.
-  Tokens/s is a necessary input, not the deliverable.
+  measure on a fixed real task: time-to-complete, token *budget*
+  consumed to reach a correct result, tool-call success rate, and
+  number of compactions triggered. Tokens/s is a necessary input,
+  not the deliverable.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.
