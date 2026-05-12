@@ -1,0 +1,48 @@
+# Recipe: HuggingFaceTB/SmolVLM2-2.2B-Instruct
+# Small vision-language model — ~5 GiB bf16 weights. Idefics3-derived
+# architecture with image + video support. First-class vLLM support
+# (SmolVLMForConditionalGeneration in the registry), no --trust-remote-code,
+# no chat-template fix needed (the bundled template works).
+#
+# Sits alongside the 35B on spark-01 — at gmu=0.12 (~14.5 GiB) it leaves
+# the 35B (gmu 0.36-0.45) plenty of room. Port 3041 (freed when the
+# cyankiwi 27B was retired from spark-01).
+
+recipe_version: "1"
+name: SmolVLM2-2.2B
+description: vLLM serving SmolVLM2-2.2B-Instruct (vision-language, image + video)
+
+model: HuggingFaceTB/SmolVLM2-2.2B-Instruct
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods:
+  - mods/pip-num2words
+
+defaults:
+  port: 3041
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.15
+  max_model_len: 8192
+  max_num_batched_tokens: 8192
+  max_num_seqs: 8
+
+env:
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve HuggingFaceTB/SmolVLM2-2.2B-Instruct \
+    --served-model-name HuggingFaceTB/SmolVLM2-2.2B-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    -tp {tensor_parallel}

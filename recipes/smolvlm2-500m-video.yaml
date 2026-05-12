@@ -1,0 +1,47 @@
+# Recipe: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+# Tiny vision-language model with video support — ~1 GiB bf16 weights.
+# Idefics3-derived (SmolVLMForConditionalGeneration), no --trust-remote-code.
+# Context capped at 8192 (max_position_embeddings); don't set higher.
+#
+# Sits on spark-01 alongside the 35B (gmu 0.36) and SmolVLM2-2.2B
+# (gmu 0.10, port 3041). At gmu=0.05 (~6 GiB) this is comfortable —
+# 1 GiB weights + small KV for an 8K-context tiny model. Port 3042.
+
+recipe_version: "1"
+name: SmolVLM2-500M-Video
+description: vLLM serving SmolVLM2-500M-Video-Instruct (vision-language, image + video)
+
+model: HuggingFaceTB/SmolVLM2-500M-Video-Instruct
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods:
+  - mods/pip-num2words
+
+defaults:
+  port: 3042
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.06
+  max_model_len: 8192
+  max_num_batched_tokens: 8192
+  max_num_seqs: 8
+
+env:
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve HuggingFaceTB/SmolVLM2-500M-Video-Instruct \
+    --served-model-name HuggingFaceTB/SmolVLM2-500M-Video-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    -tp {tensor_parallel}
