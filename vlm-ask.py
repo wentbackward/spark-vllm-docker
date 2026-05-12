@@ -10,7 +10,7 @@ Examples:
     vlm-ask.py clip.mp4 "Summarise what happens" --model 500m
 
 Endpoints (on spark-01, served OpenAI-compatibly by vLLM):
-    --model qwen-vl  -> :3041  Qwen/Qwen2.5-VL-3B-Instruct               (default; does grounding)
+    --model qwen-vl  -> :3041  Qwen/Qwen3-VL-8B-Instruct                  (default; grounding)
     --model 500m     -> :3042  HuggingFaceTB/SmolVLM2-500M-Video-Instruct (tiny; video too)
 
 For bounding boxes / "locate the X" use qwen-vl — it returns coordinates.
@@ -36,7 +36,7 @@ except (AttributeError, ValueError):
     pass
 
 ENDPOINTS = {
-    "qwen-vl": (3041, "Qwen/Qwen2.5-VL-3B-Instruct"),
+    "qwen-vl": (3041, "Qwen/Qwen3-VL-8B-Instruct"),
     "500m":    (3042, "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"),
 }
 
