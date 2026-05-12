@@ -423,9 +423,30 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   bimodal — some forward passes accept all 15 drafts, others only a couple.
   MTP variance is much lower because `num_speculative_tokens=2` caps the
   range.
-- **MTP `num_speculative_tokens` is bounded by training**. Pushing past 2
-  may hurt acceptance more than it helps throughput; needs validation per
-  model.
+- **MTP `num_speculative_tokens` is bounded by training. For Qwen3.6-27B,
+  2 is the ceiling — 3 is empirically net-negative.** Tested FP8 + MTP=3
+  on real coding workload (2026-05-12):
+
+  | spec position | acceptance rate (real coding) |
+  |---|---|
+  | position 0 (1st draft) | ~0.6-0.9 |
+  | position 1 (2nd draft) | ~0.3-0.7 |
+  | position 2 (3rd draft) | **~0.15-0.30** |
+
+  The 3rd position sits below the ~25-30% break-even where speculation
+  pays for itself — it costs a full MTP-layer forward pass per step but
+  yields a token only ~1 in 4-5. Net effects vs MTP=2 on the same
+  workloads: avg draft acceptance dropped from 70-80% to ~35-70%
+  (mean ~50%); mean acceptance length barely moved (2.0-3.1 out of
+  max 4, vs 2.4-2.6 out of max 3); generation throughput *fell* from
+  14-19 t/s to 9-15 t/s because step cost rose ~50% while accepted-
+  token yield was flat. vLLM warns about this at startup:
+  *"Enabling num_speculative_tokens > 1 will run multiple times of
+  forward on same MTP layer, which may result in lower acceptance
+  rate"* — believe it. The Qwen MTP heads are trained for 2-token
+  lookahead; position 2 is essentially uncalibrated. Also: MTP=3
+  previously caused thinking-loop behaviour on agentic workloads
+  (the original reason prod sits at 2). Keep `num_speculative_tokens: 2`.
 
 ---
 
