@@ -408,8 +408,37 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   situations than Intel's AutoRound-INT4** — and this held even when
   the AutoRound endpoint was tuned harder (sampling params pushed via
   hikyaku). Quant-method reputation didn't translate to this model /
-  this workload. cyankiwi AWQ-INT4 + MTP=2 stays the coding default.
-  AutoRound remains a parked option, not an upgrade.
+  this workload.
+
+  **FP8 (the 8-bit step up) — strongly positive (2026-05-12):**
+  `Qwen/Qwen3.6-27B-FP8 + MTP=2` produced an unambiguously better
+  coding experience than either 4-bit quant: no large circular
+  thinking blocks, every `edit` tool use landed first try (vs the
+  4-bit endpoints where roughly every other edit failed and needed a
+  different method), changes were more accurate up front, far less
+  rework. MTP acceptance on FP8 also climbs with session depth —
+  hit >90%, sustained ~83% as more context accumulates (established
+  pattern → draft head predictions land more often → decode speeds
+  up the longer you work). FP8's ~25-30% lower raw decode t/s is more
+  than repaid by the drop in wasted tokens.
+
+  ### Methodological note: tokens/s ≠ productivity
+
+  Raw decode throughput measures the engine, not the system. When
+  model quality differs, the two diverge sharply: a lower-quality
+  model spends its token budget on circular reasoning, failed tool
+  calls (and the retry-with-a-different-method that follows), and
+  rework on inaccurate changes — so it can have *higher* tokens/s and
+  *lower* useful-work-per-wall-clock-minute. The FP8 vs 4-bit
+  comparison here is the case in point: FP8 at ~15 t/s completes real
+  coding tasks faster than the 4-bit endpoints at ~21 t/s because it
+  generates the right tokens instead of a lot of tokens.
+
+  Implication for the PRO-003 perf baseline (hikyaku-pro): the
+  headline number should not be tokens/s alone. Where feasible,
+  measure time-to-complete on a fixed real task (or token *budget*
+  consumed to reach a correct result), not just generation rate.
+  Tokens/s is a necessary input, not the deliverable.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.
