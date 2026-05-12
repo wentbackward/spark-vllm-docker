@@ -399,8 +399,17 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   - Intel/Qwen3.6-27B-int4-AutoRound + MTP, design + code-review, larger: **78%**
   Both well into MTP-favouring territory; the 6-point delta is
   workload-shape (content type + context size), not a quant-quality
-  signal. Useful data point: AutoRound's MTP heads work, acceptance
-  is in the same band as cyankiwi's.
+  signal. AutoRound's MTP heads work, acceptance is in the same band
+  as cyankiwi's.
+
+  **Quant quality verdict (2026-05-12):** despite AutoRound's general
+  reputation as a higher-accuracy 4-bit method, on real coding work
+  **cyankiwi's AWQ-INT4 made noticeably better decisions in stressful
+  situations than Intel's AutoRound-INT4** — and this held even when
+  the AutoRound endpoint was tuned harder (sampling params pushed via
+  hikyaku). Quant-method reputation didn't translate to this model /
+  this workload. cyankiwi AWQ-INT4 + MTP=2 stays the coding default.
+  AutoRound remains a parked option, not an upgrade.
 - **TTFT-sensitive interactive chat**: No-spec + FP8. Lowest, most
   consistent first-token latency.
 - **Long-prompt prefill (large-context analysis)**: No-spec + FP8.

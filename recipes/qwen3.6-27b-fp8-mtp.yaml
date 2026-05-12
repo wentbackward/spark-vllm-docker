@@ -1,32 +1,46 @@
-# Recipe: Qwen/Qwen3.6-27B-FP8 + Qwen native MTP speculative decoding
-# Same as qwen3.6-27b-fp8.yaml but with --speculative-config qwen3_next_mtp.
-# Used for benchmarking spec-decode methods on the same hardware.
-# MTP uses the model's built-in multi-token prediction heads — no draft model.
+# Recipe: Qwen/Qwen3.6-27B-FP8 + native MTP speculative decoding (num_speculative_tokens=2).
+#
+# FP8 = the official Qwen 8-bit quant. Precision step up from the
+# 4-bit INT4 quants (cyankiwi AWQ, Intel AutoRound). Costs ~25% decode
+# speed (28 GiB weights vs ~14 GiB, memory-bandwidth bound on Spark)
+# but is the next rung if INT4 quant artefacts hurt coding quality.
+#
+# Params match the prod AWQ+MTP recipe (qwen3.6-27b-awq-int4-mtp.yaml)
+# so the FP8-vs-AWQ comparison is clean — same chat template
+# (qwen3.6.jinja), same parsers (qwen3 / qwen3_coder), same MTP=2,
+# same backend (flashinfer + fp8 KV). The one deliberate difference:
+# max_model_len 262144 (full window) vs prod's 196608 — FP8 has more
+# KV headroom (~374K tokens at gmu=0.7) so the full window fits, and
+# it gives extra room before client-side compaction triggers.
+#
+# Replaces the earlier benchmark-only version of this recipe (port
+# 8000, stale unsloth.jinja template). presence_penalty override is
+# kept for consistency with the other MTP recipes but is moot in
+# practice — hikyaku forces sampling params on every request.
 
 recipe_version: "1"
-name: Qwen36-27B-MTP
-description: vLLM serving Qwen3.6-27B-FP8 with native Qwen MTP speculative decoding
+name: Qwen36-27B-FP8-MTP
+description: vLLM serving Qwen3.6-27B-FP8 with native MTP speculative decoding (num_speculative_tokens=2)
 
 model: Qwen/Qwen3.6-27B-FP8
 
 container: vllm-node-tf5
 
-solo_only: true
-
 mods:
-  - mods/fix-qwen3.5-chat-template
+  - mods/fix-qwen3.6-chat-template
 
 defaults:
-  port: 8000
+  port: 3042
   host: 0.0.0.0
   tensor_parallel: 1
   gpu_memory_utilization: 0.7
   max_model_len: 262144
-  max_num_batched_tokens: 16384
-  max_num_seqs: 4
+  max_num_batched_tokens: 32768
+  max_num_seqs: 8
 
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
 
 command: |
   vllm serve Qwen/Qwen3.6-27B-FP8 \
@@ -46,7 +60,9 @@ command: |
     --attention-backend flashinfer \
     --enable-prefix-caching \
     --enable-chunked-prefill \
-    --chat-template unsloth.jinja \
+    --chat-template qwen3.6.jinja \
     --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
     --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    --generation-config auto \
+    --override-generation-config '{{"temperature":0.6,"top_p":0.95,"top_k":20,"presence_penalty":0.1,"repetition_penalty":1.0}}' \
     -tp {tensor_parallel}
