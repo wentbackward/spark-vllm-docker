@@ -1,0 +1,61 @@
+# Recipe: Qwen/Qwen3-VL-8B-Instruct-FP8
+# FP8 quant of Qwen3-VL-8B — ~8 GiB weights vs ~16 GiB bf16. The official
+# FP8 quant keeps the vision encoder higher-precision, so grounding/OCR
+# quality is largely unaffected; FP8 hits the text-generation side. On
+# Spark (memory-bandwidth bound) that's ~1.5-2x decode speedup, and the
+# ~8 GiB freed lets vLLM batch more concurrent requests — worth it for
+# image-batch workloads (the bf16 8B was tight on a 3-model spark-01).
+#
+# Served under the name `Qwen/Qwen3-VL-8B-Instruct` (NO -FP8 suffix) so
+# clients / batch scripts pointed at the bf16 model don't need changing.
+#
+# spark-01 vision slot (port 3041), alongside the 35B (gmu 0.36) and
+# SmolVLM2-500M (gmu 0.06). gmu 0.22 (~27 GiB): ~13 GiB weights+vision+
+# overhead, ~14 GiB for KV (bf16). 32K context at ~2.7x concurrency,
+# or many more concurrent short image-requests — fine for batch work.
+# max_num_seqs bumped to 24 for batch throughput.
+#
+# vLLM auto-detects the FP8 quantization from config.json — no
+# --quantization flag needed. flashinfer backend, bf16 KV. (fp8 KV was
+# tried but the FP8 checkpoint ships no attention scaling factors —
+# vLLM falls back to uncalibrated 1.0 scales, "may cause accuracy
+# issues" — not worth it for grounding.)
+
+recipe_version: "1"
+name: Qwen3-VL-8B-FP8
+description: vLLM serving Qwen3-VL-8B-Instruct-FP8 (vision-language + grounding, FP8)
+
+model: Qwen/Qwen3-VL-8B-Instruct-FP8
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 3041
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.22
+  max_model_len: 32768
+  max_num_batched_tokens: 16384
+  max_num_seqs: 24
+
+env:
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Qwen/Qwen3-VL-8B-Instruct-FP8 \
+    --served-model-name Qwen/Qwen3-VL-8B-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --attention-backend flashinfer \
+    -tp {tensor_parallel}
