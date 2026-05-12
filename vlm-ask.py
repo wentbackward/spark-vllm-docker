@@ -10,8 +10,11 @@ Examples:
     vlm-ask.py clip.mp4 "Summarise what happens" --model 500m
 
 Endpoints (on spark-01, served OpenAI-compatibly by vLLM):
-    --model 2.2b  -> :3041  HuggingFaceTB/SmolVLM2-2.2B-Instruct       (default)
-    --model 500m  -> :3042  HuggingFaceTB/SmolVLM2-500M-Video-Instruct (video too)
+    --model qwen-vl  -> :3041  Qwen/Qwen2.5-VL-3B-Instruct               (default; does grounding)
+    --model 500m     -> :3042  HuggingFaceTB/SmolVLM2-500M-Video-Instruct (tiny; video too)
+
+For bounding boxes / "locate the X" use qwen-vl — it returns coordinates.
+The SmolVLM models are general image-understanding only (no grounding).
 
 Stdlib only — no pip deps. Pass --host if `spark-01` doesn't resolve from
 where you're running this.
@@ -33,8 +36,8 @@ except (AttributeError, ValueError):
     pass
 
 ENDPOINTS = {
-    "2.2b": (3041, "HuggingFaceTB/SmolVLM2-2.2B-Instruct"),
-    "500m": (3042, "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"),
+    "qwen-vl": (3041, "Qwen/Qwen2.5-VL-3B-Instruct"),
+    "500m":    (3042, "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"),
 }
 
 
@@ -46,8 +49,8 @@ def main():
     )
     ap.add_argument("file", help="image or video file to send")
     ap.add_argument("prompt", help="the question / instruction")
-    ap.add_argument("--model", choices=list(ENDPOINTS), default="2.2b",
-                    help="which endpoint (default: 2.2b)")
+    ap.add_argument("--model", choices=list(ENDPOINTS), default="qwen-vl",
+                    help="which endpoint (default: qwen-vl)")
     ap.add_argument("--host", default="spark-01",
                     help="hostname/IP of the vLLM box (default: spark-01)")
     ap.add_argument("--max-tokens", type=int, default=512)
