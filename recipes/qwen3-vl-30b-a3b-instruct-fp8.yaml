@@ -1,0 +1,59 @@
+# Recipe: Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
+# 30B-total / 3B-active MoE vision-language model, FP8 quant — ~30 GiB
+# weights (MoE stores all experts even at A3B). Big step up in capacity
+# from the 8B-VL for grounding/OCR/fine-detail; "Instruct" (not Thinking)
+# so no per-request reasoning trace — fast enough for image batches.
+# vLLM support: Qwen3VLMoeForConditionalGeneration, no --trust-remote-code.
+#
+# Served under the name `Qwen/Qwen3-VL-30B-A3B-Instruct` (NO -FP8 suffix).
+#
+# spark-01 vision slot (port 3041), alongside the 35B (gmu 0.36). The
+# 8B-VL and SmolVLM2-500M were retired to make room — this needs ~37 GiB
+# loaded (weights + vision tower + overhead). gmu 0.35 (~42 GiB): ~30.5 GiB weights + ~3.5 GiB vision/overhead +
+# ~8 GiB KV (86K tokens, 2.63x concurrency at 32K — plenty for batch
+# grounding of single images). 35B 0.36 + this 0.35 = 0.71 of 121 GiB
+# ≈ 86 GiB reserved + ~14 GiB OS ≈ 100 GiB — leaves the box off the edge.
+#
+# bf16 KV (NOT fp8 KV — the FP8 checkpoint ships no attention scaling
+# factors; vLLM would fall back to uncalibrated 1.0 scales with a "may
+# cause accuracy issues" warning, not worth it for grounding).
+# Instruct variant → no --reasoning-parser needed.
+
+recipe_version: "1"
+name: Qwen3-VL-30B-A3B-Instruct-FP8
+description: vLLM serving Qwen3-VL-30B-A3B-Instruct-FP8 (MoE vision-language + grounding, FP8)
+
+model: Qwen/Qwen3-VL-30B-A3B-Instruct-FP8
+
+container: vllm-node-tf5
+
+solo_only: true
+
+mods: []
+
+defaults:
+  port: 3041
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.35
+  max_model_len: 32768
+  max_num_batched_tokens: 16384
+  max_num_seqs: 16
+
+env:
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 \
+    --served-model-name Qwen/Qwen3-VL-30B-A3B-Instruct \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --attention-backend flashinfer \
+    -tp {tensor_parallel}
