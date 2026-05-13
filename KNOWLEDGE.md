@@ -448,6 +448,19 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
      INT4. (This is also why INT4 kept hitting the ~180K-input
      compaction wall — it filled context fast enough to keep slamming
      into it.)
+  4. **Stability at deep context (the quality cliff).** INT4 quants
+     visibly degrade — screwy output, hallucination, contradicting
+     themselves — well *before* hitting the model's nominal context
+     limit; we saw it on both cyankiwi AWQ-INT4 and Intel AutoRound-INT4
+     at ~70-80% of the 262K window. FP8 stayed coherent at the same
+     depth. Underlying mechanism is the same as the "stressful-situation
+     decisions" observation: INT4 has less precision margin, and deep
+     context is just another form of pressure (more accumulated
+     rounding errors propagating through more attention passes).
+     **Note:** the standard long-context benchmarks (NIAH, RULER, etc.)
+     measure *recall accuracy* at depth — they don't catch this
+     subjective degradation, which is the user-visible failure mode.
+     Yet another way benchmarks miss the productivity-relevant thing.
 
   Implication for the PRO-003 perf baseline (hikyaku-pro): the
   headline number should not be tokens/s alone. Where feasible,
