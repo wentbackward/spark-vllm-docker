@@ -28,6 +28,7 @@ container: vllm-node-tf5
 
 mods:
   - mods/fix-qwen3.6-chat-template
+  - mods/flashqla
 
 defaults:
   port: 3042
