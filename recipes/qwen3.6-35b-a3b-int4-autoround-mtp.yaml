@@ -22,13 +22,14 @@ container: vllm-node-tf5
 
 mods:
   - mods/fix-qwen3.6-chat-template
+  - mods/flashqla
 
 defaults:
   port: 3040
   host: 0.0.0.0
   tensor_parallel: 1
   gpu_memory_utilization: 0.36
-  max_model_len: 65536
+  max_model_len: 262144
   max_num_batched_tokens: 16384
   max_num_seqs: 4
 
@@ -37,7 +38,7 @@ env:
 
 command: |
   vllm serve Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound \
-    --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 \
+    --served-model-name Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound \
     --host {host} \
     --port {port} \
     --max-model-len {max_model_len} \
