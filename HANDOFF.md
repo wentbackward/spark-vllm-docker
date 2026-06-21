@@ -30,6 +30,31 @@ journal). This file is short on purpose — read those for depth.
 35B-A3B is **not currently running anywhere** — openclaw was redirected
 to HuggingFace inference earlier; revisit if you want it local again.
 
+> ⚠️ **The table above is STALE** (pre-2026-06 setup). See the dated
+> update below for current reality.
+
+### Update 2026-06-21
+
+- **spark-01:3040 `vllm_35b` = `Qwen/Qwen3.6-35B-A3B-FP8` + MTP=2**, now on
+  the **vLLM 0.23.1 test image** (`vllm-node-tf5-v0231`), gmu 0.43, 262K,
+  ~8× KV concurrency. Multimodal (vision tower loaded) — currently also
+  serving receipt OCR. Config lives on branch `sync-upstream-0231`
+  (not yet promoted to main / not yet on spark-02).
+- **`vllm_qwen_vl` (Qwen3-VL-30B-A3B-Instruct-FP8) — PARKED 2026-06-21.**
+  Its real job is **grounding for the behavioral-cloning facility**
+  (pixel-accurate on-screen localization), *not* receipt OCR. Stopped to
+  free ~42 GiB after the 35B-A3B-FP8 (multimodal + MTP) matched it on 5
+  easy receipts. **Two reasons that comparison is weak — re-validate
+  before retiring:**
+  1. *OCR-parity ≠ grounding-parity.* Reading a receipt says nothing
+     about pixel-accurate grounding, which is the VL's specialized job.
+  2. *The perf test was swap-confounded.* All 16 GiB swap was in use
+     during the run, so the VL's ~30% slower number is unreliable — it
+     could be swap thrashing (KNOWLEDGE §6: ~50% slowdowns from
+     co-located swap pressure), not MTP or model quality.
+  - Restore: `./run-recipe.py qwen3-vl-30b-a3b-instruct-fp8 --solo
+    --name vllm_qwen_vl -d` (still on the 0.19.2 `vllm-node-tf5` image).
+
 ## Major decisions made (durable)
 
 - **27B inference config**: AWQ-INT4 (cyankiwi quant) + native MTP at
