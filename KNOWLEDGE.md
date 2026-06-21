@@ -284,6 +284,40 @@ don't need to know which quant. To add multiple aliases:
 - **NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 / NVFP4**: poor agentic quality on
   this stack as of 2026-04. Recipe retained but model not in active rotation.
 
+### Model-suitability notes (independent of quant)
+
+- **PaddleOCR-VL-1.5 on Spark: don't bother (as of 2026-05-19).**
+  Architecture was merged into vLLM mainline on 2026-05-18, but no
+  community success on Blackwell SM121a + aarch64 — DGX Spark forum
+  posters who tried it reverted to Qwen VL models for PDF-parsing
+  workloads, reported performance was "sufficient" for bulk
+  transcription. Baidu's pre-baked container
+  (`ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server`)
+  is x86_64-only and almost certainly not compiled for sm_121a. For
+  agentic-OCR (understanding-grounded — "what does this receipt
+  mean?" rather than glyph transcription) use the existing
+  `Qwen/Qwen3-VL-30B-A3B-Instruct` on spark-01:3041. For bulk
+  transcription throughput, fall back to `Qwen2.5-VL-3B` or
+  `Qwen3-VL-8B` on spark-02 (both first-class in vLLM, no patching).
+  Revisit only if a specific OCR-throughput bottleneck materialises
+  AND the upstream PR has matured AND someone has reported Blackwell
+  + aarch64 success.
+
+- **Qwen3.6-35B-A3B is not a coding model.** Tested 2026-05-16 across
+  both Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound and the official
+  Qwen/Qwen3.6-35B-A3B-FP8, with Qwen-recommended sampling enforced
+  by hikyaku (temp 0.6, top_p 0.95, top_k 20, presence_penalty 0.1,
+  repetition_penalty 1.05, MTP=2). On stressful coding workloads the
+  35B "gets excited then drops into a tight loop"; the 27B FP8
+  resolves the same prompts immediately. Same recipe shape, same
+  sampling, same MTP setting — only the model differs. Rules out
+  quant, sampling, and recipe wiring as causes; the 3B active params
+  per token can't carry per-token decisions under coding pressure
+  even when the wrapper is 35B. The 35B-A3B is still fine for
+  simple/general agentic tasks (it ran openclaw productively for
+  weeks), just don't put it in the coder slot. For coding use the
+  27B FP8.
+
 ### VLMs that DON'T work in vLLM (don't reattempt without fresh evidence)
 
 - **`apple/FastVLM-*`**: architecture `llava_qwen2` not in vLLM's

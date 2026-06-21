@@ -48,6 +48,9 @@ class FakeLLMServer:
     def _id_header(self):
         return {"X-Fake-LLM-Id": self.server_id}
 
+    async def handle_health(self, request):
+        return web.json_response({"status": "ok"}, headers=self._id_header())
+
     async def handle_models(self, request):
         return web.json_response(
             {
@@ -181,6 +184,7 @@ def main():
     # they pass the version prefix through to the backend.
     app.router.add_get("/v1/models", srv.handle_models)
     app.router.add_get("/models", srv.handle_models)
+    app.router.add_get("/health", srv.handle_health)
     app.router.add_get("/metrics", srv.handle_metrics)
     app.router.add_post("/v1/chat/completions", srv.handle_chat)
     app.router.add_post("/chat/completions", srv.handle_chat)

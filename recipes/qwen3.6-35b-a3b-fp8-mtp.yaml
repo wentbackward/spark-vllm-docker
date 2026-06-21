@@ -18,16 +18,26 @@ container: vllm-node-tf5
 
 mods:
   - mods/fix-qwen3.6-chat-template
+  # FlashQLA: Blackwell GDN prefill kernel. This MoE has GDN (linear-
+  # attention) layers, so the kernel applies — same as the 27B FP8 and
+  # 35B int4-autoround recipes. Without it vLLM falls back to the stock
+  # Triton/FLA GDN prefill path. Added 2026-06-21 (recipe had missed it).
+  - mods/flashqla
 
 defaults:
   port: 3040
   host: 0.0.0.0
   tensor_parallel: 1
-  # gmu sized to coexist with the 27B-MTP at gmu=0.50 on the same Spark.
-  # vLLM v1 enforces gmu × total ≤ current_free at startup, so we size
-  # below the OS-overhead headroom. Tune up if the 27B is removed.
-  gpu_memory_utilization: 0.36
-  max_model_len: 65536
+  # gmu sized to coexist with the Qwen3-VL-30B-A3B (gmu 0.35) on
+  # spark-01, leaving ~4 GiB host headroom. 0.43 yields ~12.6 GiB KV
+  # (~298K tokens), enough to back the full 262K window at >1x
+  # concurrency. NOTE the coupling: max_model_len and gmu move together
+  # — at the old 0.36 the KV pool only backed ~76K tokens, so 262144
+  # would NOT start there (vLLM refuses when KV can't hold one full
+  # sequence). If you drop gmu, drop max_model_len to match; if the VL
+  # is removed, gmu can go to ~0.5 for more KV/concurrency.
+  gpu_memory_utilization: 0.43
+  max_model_len: 262144
   max_num_batched_tokens: 16384
   # 4 concurrent slots is plenty for serial agentic flows. Multiple
   # virtual-model routes (thinker, instruct, etc.) share these slots
@@ -37,6 +47,29 @@ defaults:
 
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  # Pin the CuTe/CUTLASS DSL to this GPU's compute capability (SM121a).
+  # Harmless to keep; used by tilelang/CUTLASS code paths (e.g. FlashQLA).
+  CUTE_DSL_ARCH: sm_121a
+  # Keep the API connection alive through multi-minute streamed
+  # generations (long agentic turns / deep-context responses) so the
+  # client isn't dropped mid-stream.
+  VLLM_HTTP_TIMEOUT_KEEP_ALIVE: '600'
+  # FP8 MoE backend: vLLM auto-selects, and on GB10 it lands on TRITON,
+  # which emits "Using default MoE config — performance might be
+  # sub-optimal" (no tuned per-shape config for E=256,N=512).
+  #   - VLLM_FP8_MOE_BACKEND is NOT a real vLLM env var (verified: absent
+  #     from the codebase) — it is a no-op. Do not use it.
+  #   - The real knob is VLLM_USE_FLASHINFER_MOE_FP8=1, but: TESTED on
+  #     spark-01 2026-06-21 → HARD FAIL at startup:
+  #       "NotImplementedError: Found VLLM_USE_FLASHINFER_MOE_FP8=1, but
+  #        no FlashInfer FP8 MoE backend supports the configuration."
+  #     Neither CUTLASS nor TRT-LLM FlashInfer FP8 MoE supports this
+  #     model's shape (E=256,N=512, block-scaled fp8) on GB10/sm121a in
+  #     image vllm-node-tf5 (vLLM 0.19.2rc1.dev4). Do NOT re-enable
+  #     without a newer build that adds the kernel. The only lever to
+  #     clear the Triton "sub-optimal config" warning is the per-shape
+  #     Triton MoE tuning sweep (see KNOWLEDGE §MoE tuning).
+  # VLLM_USE_FLASHINFER_MOE_FP8: '1'   # ← confirmed broken on GB10, leave off
 
 command: |
   vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
