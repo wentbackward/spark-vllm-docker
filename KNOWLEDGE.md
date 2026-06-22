@@ -154,6 +154,14 @@ toggled, everything else identical — same image, gmu, MTP, DPI, N):
   Mechanism: concurrent requests sharing prefix-cache KV blocks read
   each other's cached state.
 
+**A fixed sampling seed makes NO difference** — corruption persists with
+prefix-on even with a pinned seed. This rules out the sampling/RNG layer:
+the bug is in KV/prefix-cache *state management* (cross-request block
+contamination), which no seed can touch. (At temp 0 the seed is moot
+anyway — greedy doesn't sample — so the point is doubly clean.) Don't
+waste time chasing determinism via seeds/temperature; the only fix is
+turning prefix caching off.
+
 **Trigger profile:** maximal when many concurrent requests share a long
 prefix (same system prompt + JSON schema) — exactly the shape of a
 batch extraction/agent workload. Single-threaded is always clean.

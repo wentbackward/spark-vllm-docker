@@ -73,6 +73,16 @@ env:
   #     Triton MoE tuning sweep (see KNOWLEDGE §MoE tuning).
   # VLLM_USE_FLASHINFER_MOE_FP8: '1'   # ← confirmed broken on GB10, leave off
 
+# Prefix caching is DISABLED below (--no-enable-prefix-caching). It
+# corrupts Qwen MoE output under concurrent shared-prefix load —
+# cross-request KV-state contamination (a vendor name landing in the
+# currency field, one receipt's data in another's output, token
+# insertion). Confirmed 2026-06-22 by a single-variable A/B (on=corrupt,
+# off=clean, N=1==N=4==N=8). A fixed sampling seed made NO difference,
+# proving it's KV/prefix-cache state — not sampling RNG. Same bug class
+# eugr root-caused as the 0.20 regression. Do NOT re-enable without a
+# vLLM build proven clean via a single==multi acceptance test.
+# See KNOWLEDGE §3 "Prefix caching corrupts Qwen MoE under concurrency".
 command: |
   vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
     --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 \
@@ -88,7 +98,7 @@ command: |
     --kv-cache-dtype fp8 \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
-    --enable-prefix-caching \
+    --no-enable-prefix-caching \
     --enable-chunked-prefill \
     --chat-template qwen3.6.jinja \
     --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
