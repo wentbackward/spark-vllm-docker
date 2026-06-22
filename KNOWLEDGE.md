@@ -735,10 +735,31 @@ them:
 - **DFlash + 35B**: not yet attempted. The MTP heads on 35B-A3B work, but
   DFlash would need a draft model trained against Qwen3.6-35B specifically
   (none exists publicly as of 2026-04).
-- **TP=2 vs DFlash trade-off**: empirically, single-node DFlash on AWQ-INT4
-  beats 2-node TP for memory-bandwidth-bound dense models. TP=2 wins when
-  KV cache is the bottleneck (very long contexts) or for compute-heavy
-  prefill on large prompts.
+- **TP=2 across two Sparks — MEASURED, and it beats single-node (2026-06-22).**
+  Earlier guidance here said "single-node DFlash on AWQ-INT4 beats 2-node TP" —
+  that was inferred from the DFlash/INT4 setup and is **wrong for FP8+MTP**.
+  Clean A/B on Qwen3.6-27B-FP8 + MTP (same llama-benchy, pp512/tg256), vLLM
+  0.23.1 image:
+
+  | config | decode t/s | prefill t/s |
+  |---|---|---|
+  | single-node (1 Spark) | 15.5 | 690 |
+  | **TP=2 (2 Sparks, Ray, RoCE)** | **20.3 (+31%)** | **1476 (+114%)** |
+
+  So TP=2 is **net-positive** here: each node reads half the weights →
+  faster bandwidth-bound decode (1.31× of the theoretical 2×; the CX7
+  all-reduce eats the rest), and prefill gets ~2.1× (the all-reduce
+  amortizes over the big batch). KV pool also balloons (split model →
+  13.8× concurrency @ 262K at gmu 0.7; ~2.3× at gmu 0.30).
+
+  **But TP=2 vs DP is a latency-vs-throughput choice, not "which is faster":**
+  - **TP=2** = one *faster* pipeline (20.3 t/s single-request). Best **latency**.
+  - **DP** (replica per Spark + sticky routing) = two pipelines, ~2× **aggregate**
+    throughput (≈31 t/s), zero inter-node comms. Best **throughput**.
+  Crossover is concurrency: TP=2 wins at low concurrency (1-2 users), DP
+  wins as concurrent load climbs. For a small team weigh single-request
+  latency vs total capacity. Reach for TP only when both nodes are free to
+  dedicate; multi-node launch is `-n <ip1>,<ip2> --tp 2 -- --distributed-executor-backend ray`.
 - **`resolver/TEST-MATRIX.md`**: aspirational sweep plan, partly stale (was
   written before the agentic harness rewrite). Re-read before running.
 
