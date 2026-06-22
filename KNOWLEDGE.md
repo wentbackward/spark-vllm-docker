@@ -127,6 +127,55 @@ regression on Qwen3.6-27B BF16 and FP8 (eval scores dropping 93→44 /
 version we're currently on. When it's time to rebuild, skip 0.20 and
 go to 0.21+ (or whatever is then known-good). Re-test eval quality
 on a representative coding task before promoting any new build.
+**The 0.20 regression was prefix caching** (eugr root-caused it) — the
+same bug class as the §below. Treat "Qwen quality regression on a new
+vLLM" as prefix-caching-until-proven-otherwise.
+
+### Prefix caching corrupts Qwen MoE output under concurrency (RECURRING)
+
+**`--enable-prefix-caching` causes cross-request data corruption on
+Qwen MoE models under concurrent load with shared prefixes.** Confirmed
+on **0.23.1rc1.dev226** with `Qwen/Qwen3.6-35B-A3B-FP8` + MTP; the same
+class of bug was the 0.20 quality regression above. This is a
+**recurring** vLLM-prefix-cache × Qwen-MoE failure — assume any new
+vLLM build is suspect until tested.
+
+**Confirmed by a clean single-variable A/B** (only `enable_prefix_caching`
+toggled, everything else identical — same image, gmu, MTP, DPI, N):
+- **OFF:** N=1, N=4, N=8 produce *byte-identical* output, matching the
+  single-thread 200-DPI ground truth. Deterministic and safe.
+- **ON:** florid corruption at N=8 — and it's **state leakage, not
+  benign nondeterminism**:
+  - cross-*field*: a company name lands in the `currency` field, a date
+    in the `currency` field, the literal schema word `date` as a value;
+  - cross-*receipt*: request A's values appear in request B's output
+    (one receipt got a different receipt's amount/vendor);
+  - token insertion mid-value (`33.33.62`, `202026-01-19`, `48.0.00`).
+  Mechanism: concurrent requests sharing prefix-cache KV blocks read
+  each other's cached state.
+
+**Trigger profile:** maximal when many concurrent requests share a long
+prefix (same system prompt + JSON schema) — exactly the shape of a
+batch extraction/agent workload. Single-threaded is always clean.
+Diverse-prefix concurrency is *less likely* to trip it but is NOT proven
+safe (and at scale, diverse requests still share batches — the failure
+just becomes invisible without a strict output gate).
+
+**Fix:** `--no-enable-prefix-caching`. Costs ~30% on single-request
+prefill (the shared prefix is reprocessed every request) but is fully
+recovered under concurrency (N=8 throughput ≈ N=1-with-caching). For
+this stack the correctness win dwarfs the prefill cost — **run perf
+recipes prefix-caching-off until a vLLM build is proven clean.**
+
+**Two durable lessons:**
+1. **Validate `single == multi` as an acceptance gate** before shipping
+   any concurrency. Field-diff N=1 vs N=8 output; non-identical (beyond
+   benign value-divergence) = do not ship.
+2. **You cannot validate your way out of a contaminating inference
+   layer.** Per-field checks catch *malformed* values loudly but pass
+   *valid-but-wrong* contamination silently (a leaked vendor/amount is
+   still a valid vendor/amount). The defenses are: don't run the
+   contaminating config, and add cross-request reconciliation/dedup.
 
 ### Tool-call parser: use `qwen3_coder`, not `qwen3_xml`
 
