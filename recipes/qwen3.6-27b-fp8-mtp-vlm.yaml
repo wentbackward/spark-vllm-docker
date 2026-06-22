@@ -1,0 +1,62 @@
+# Recipe: Qwen/Qwen3.6-27B-FP8 + MTP, VISION-ENABLED, for the 0.23 image.
+#
+# Variant of qwen3.6-27b-fp8-mtp.yaml for benchmarking / VLM use on the
+# vLLM 0.23 image (vllm-node-tf5-v0231). Three deliberate differences
+# from the coder recipe:
+#   1. NO --language-model-only  → vision tower loads (multimodal), so
+#      this can run the receipt/vision concurrency tests.
+#   2. --no-enable-prefix-caching → prefix caching corrupts output under
+#      concurrent shared-prefix load (see KNOWLEDGE §3 "Prefix caching
+#      corrupts Qwen MoE"; baked off here so concurrency benchmarks are
+#      measuring real, uncorrupted throughput).
+#   3. NO mods/flashqla → its patch target (gdn_linear_attn.py) was
+#      relocated in 0.23 and aborts launch; the dense 27B doesn't use GDN
+#      anyway. (Re-add only on the 0.19.2 image.)
+#
+# Launch on spark-02 with: -t vllm-node-tf5-v0231 --solo
+
+recipe_version: "1"
+name: Qwen36-27B-FP8-MTP-VLM
+description: vLLM serving Qwen3.6-27B-FP8 with MTP, vision enabled, prefix-caching off (0.23 image)
+
+model: Qwen/Qwen3.6-27B-FP8
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+defaults:
+  port: 3042
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.7
+  max_model_len: 262144
+  max_num_batched_tokens: 32768
+  max_num_seqs: 8
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Qwen/Qwen3.6-27B-FP8 \
+    --served-model-name Qwen/Qwen3.6-27B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype fp8 \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --no-enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    -tp {tensor_parallel}
