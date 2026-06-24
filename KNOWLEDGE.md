@@ -404,6 +404,34 @@ DFlash repo gating: requires `huggingface.co/z-lab/Qwen3.6-27B-DFlash`
 acceptance. Once cached, set `HF_HUB_OFFLINE=1` in the recipe so vLLM
 doesn't try to re-fetch the index over HTTP at startup (it would 401).
 
+### DFlash on 35B-A3B + vLLM 0.23: BLOCKED on unmerged upstream (2026-06-23)
+
+The latest `z-lab/Qwen3.6-35B-A3B-DFlash` draft (snapshot `f181eece`,
+~1.7 GB, pulled 2026-06) **requires drafter sliding-window-attention
+support from vLLM PR #40898, which is not merged.** Findings:
+
+- **Latest draft crashes** on the v0231 build (0.23.1rc1.dev226) with
+  `AssertionError` in EngineCore init (no drafter-SWA support).
+- **Old draft `42d3b34d` (905 MB) loads** but runs **degraded** — SWA
+  layers in the drafter run as full attention → poor acceptance,
+  especially long-context. Usable for a *stability*-only test, not a
+  representative *speed* test.
+- **Can't patch it in:** both `--apply-vllm-pr 40898` and its temp
+  cherry-pick `--apply-vllm-pr 44807` **fail the build's `git merge`
+  against current `main`** — #40898 conflicts in 4 files
+  (qwen3_dflash.py, scheduler.py, dflash.py, gpu_model_runner.py);
+  #44807 conflicts in gpu_model_runner.py. Both are stale drafts
+  (needs-rebase). Hand-resolving = custom patch on core engine
+  internals that breaks every vLLM bump — not worth it.
+- **Verdict:** park DFlash on the 35B until #40898 (or successor)
+  rebases/merges into a build we run, then `--apply-vllm-pr` works
+  trivially. Meanwhile **MTP-off is the stable 35B answer** (see §5).
+
+(Mechanics note: the build applies PRs via `git merge pr-NNN`, so a PR
+must merge cleanly into the `VLLM_REF` base — a conflicted PR fails fast
+at build step ~#14, within ~1 min. Launch long remote builds via
+`tmux new-session -d` — nohup-over-ssh kept dying.)
+
 ---
 
 ## 5. Speculative decoding
