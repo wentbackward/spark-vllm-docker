@@ -426,6 +426,13 @@ support from vLLM PR #40898, which is not merged.** Findings:
 - **Verdict:** park DFlash on the 35B until #40898 (or successor)
   rebases/merges into a build we run, then `--apply-vllm-pr` works
   trivially. Meanwhile **MTP-off is the stable 35B answer** (see §5).
+- **Tracking:** umbrella feature ticket
+  [vllm#46105](https://github.com/vllm-project/vllm/issues/46105)
+  (subscribed 2026-06-23). Revisit DFlash when it lands — rebuild
+  with `--apply-vllm-pr` against a build that includes it, re-pull the
+  latest `z-lab/Qwen3.6-35B-A3B-DFlash` draft, and run the agentic
+  *stability* test (does the separate-draft path avoid the
+  native-MTP-on-MoE loops?).
 
 (Mechanics note: the build applies PRs via `git merge pr-NNN`, so a PR
 must merge cleanly into the `VLLM_REF` base — a conflicted PR fails fast
