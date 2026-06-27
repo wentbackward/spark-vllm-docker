@@ -1,0 +1,38 @@
+# Recipe: Qwen/Qwen3-4B-Instruct-2507-FP8
+# Small text-only, tool-calling, NON-thinking model (no <think> blocks).
+# Sized as a tiny 2048-context utility endpoint — fits easily alongside
+# other models. FP8 variant of qwen3-4b-instruct.yaml.
+
+recipe_version: "1"
+name: Qwen3-4B-Instruct-2507-FP8
+description: vLLM serving Qwen3-4B-Instruct-2507-FP8 (small text utility, 2048 ctx)
+
+model: Qwen/Qwen3-4B-Instruct-2507-FP8
+
+container: vllm-node-tf5
+
+mods: []
+
+defaults:
+  port: 3043
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.08
+  max_model_len: 2048
+
+env:
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Qwen/Qwen3-4B-Instruct-2507-FP8 \
+    --served-model-name Qwen/Qwen3-4B-Instruct-2507-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --kv-cache-dtype fp8 \
+    --no-enable-prefix-caching \
+    --enforce-eager \
+    -tp {tensor_parallel}
