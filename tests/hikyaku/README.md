@@ -181,7 +181,7 @@ pip install locust
 ### Run interactively (web UI, recommended for first runs)
 
 ```bash
-locust -f locustfile.py --host http://limone.royal-armadillo.ts.net:4000
+locust -f locustfile.py --host http://limone:4000
 ```
 
 Then open `http://localhost:8089`. Set:
@@ -196,7 +196,7 @@ terminal.
 ### Run headless (no UI, for scripted runs)
 
 ```bash
-locust -f locustfile.py --host http://limone.royal-armadillo.ts.net:4000 \
+locust -f locustfile.py --host http://limone:4000 \
   --headless --users 1000 --spawn-rate 100 --run-time 60s
 ```
 

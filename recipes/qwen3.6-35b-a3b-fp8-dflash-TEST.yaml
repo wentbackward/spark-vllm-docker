@@ -1,0 +1,54 @@
+# TEST recipe: Qwen3.6-35B-A3B-FP8 + DFlash speculative decoding (solo).
+# Corrected variant of the stale upstream qwen3.6-35b-a3b-fp8-dflash.yaml:
+#   - solo (TP=1), not 2-node TP/Ray
+#   - our image (vllm-node-tf5-v0231 via -t), qwen3_coder parser, our
+#     chat template (qwen3.6.jinja), prefix-caching OFF (KNOWLEDGE §3)
+#   - DFlash needs --attention-backend flash_attn, which REJECTS fp8 KV
+#     → bf16 KV (KNOWLEDGE §5). So: FP8 weights + bf16 KV (heavier KV).
+#   - num_speculative_tokens 15 (DFlash default; separate draft model,
+#     NOT the native-MTP path that loops on MoE).
+# Throwaway test recipe — not for commit.
+
+recipe_version: "1"
+name: Qwen36-35B-A3B-FP8-DFlash
+description: Qwen3.6-35B-A3B-FP8 + DFlash, solo, bf16 KV (test)
+
+model: Qwen/Qwen3.6-35B-A3B-FP8
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+
+defaults:
+  port: 3043
+  host: 0.0.0.0
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.35
+  max_model_len: 131072
+  max_num_batched_tokens: 16384
+  max_num_seqs: 8
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
+    --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --load-format fastsafetensors \
+    --attention-backend flash_attn \
+    --no-enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --speculative-config '{{"method":"dflash","model":"z-lab/Qwen3.6-35B-A3B-DFlash","num_speculative_tokens":15}}' \
+    -tp {tensor_parallel}

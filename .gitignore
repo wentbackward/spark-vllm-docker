@@ -12,3 +12,7 @@ __pycache__/
 .venv/
 data/
 
+# generated benchmark / test-run artifacts (not source)
+tests/results-*/
+tests/hikyaku/llama-benchy-runs/
+

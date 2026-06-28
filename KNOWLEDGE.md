@@ -39,7 +39,7 @@ This dual-port-on-same-subnet config breaks the repo's `autodiscover.sh`
 
 ### External services
 
-- **`limone.royal-armadillo.ts.net`** (Jetson Orin Nano) runs the
+- **`limone`** (Jetson Orin Nano, on the tailnet) runs the
   **hikyaku** that routes client traffic to the right vLLM endpoint by
   model name. Proxy is no longer hosted on spark-01 itself.
 - Tailnet: both Sparks are joined and routable by hostname (`paul@spark-02`).
@@ -120,6 +120,13 @@ Build: `./build-and-copy.sh --tf5 [--copy-to <host>]`. Use
 
 Currently deployed (as of 2026-05-06): vLLM `0.19.2rc1.dev4+gb5f6c5f83`
 (image built 2026-04-18), torch 2.11.0+cu130, transformers 5.5.4.
+
+**Update 2026-06-28:** the live cluster now runs the **0.23 image
+`vllm-node-tf5-v0231`** (vLLM `0.23.1rc1.dev226`) on every endpoint — see
+§11 for the layout. The 0.19.2 `vllm-node-tf5` image is retained as a
+fallback. Note: the FlashQLA mod / `mods/flashqla` recipe block does **not**
+apply on 0.23 (its patch target `gdn_linear_attn.py` was relocated and it
+aborts launch) — omit it from v0231 recipes; the dense 27B doesn't need it.
 
 **Known-bad: vLLM 0.20.** NVIDIA forum reports of severe quality
 regression on Qwen3.6-27B BF16 and FP8 (eval scores dropping 93→44 /
@@ -827,6 +834,52 @@ rsync -aH --info=progress2 \
 # Quick endpoint sanity check
 curl -s -m 5 http://<host>:<port>/v1/models | python3 -m json.tool
 ```
+
+---
+
+## 11. Boot and reboot-recovery (persistence)
+
+The cluster comes back after a reboot or power loss via **one idempotent
+script**, not a pile of per-model systemd units. The old per-model design
+drifted stale and mis-recovered the 2026-06 power loss (it relaunched a
+retired AWQ-INT4 35B on the wrong port). Consolidated 2026-06-28.
+
+**Single source of truth: `~/admin/start-cluster.sh`** (host-local on
+spark-01, not in this repo). It defines the whole layout and is safe to run
+by hand or at boot:
+
+| host:port | model | how |
+|---|---|---|
+| spark-01:3042 | 27B-FP8 **TP=2** (API server on head=spark-01, worker on spark-02), text-only | recipe `qwen3.6-27b-fp8-mtp-vlm` + `--language-model-only`, ray, gmu 0.30/node |
+| spark-01:3040 | 35B-A3B-FP8 **MTP-OFF**, 128k | recipe `qwen3.6-35b-a3b-fp8-nomtp` `--solo`, gmu 0.40 |
+| spark-02:3043 | 4B-Instruct-2507-FP8 utility, 2048 | recipe `qwen3-4b-instruct-2507-fp8` `--solo` (launched over ssh) |
+
+All on the 0.23 image `vllm-node-tf5-v0231`, **prefix-caching OFF** (§3).
+The script is **idempotent** — each step skips if its port already serves —
+so re-runs are harmless. It waits for spark-02 to be ssh-reachable before
+the TP=2 and 4B steps (both depend on spark-02).
+
+**Boot chain (spark-01):** `spark-services.service` (enabled) →
+`start-services.sh` → `start-vllm.sh` (now just `exec start-cluster.sh`) +
+`start-comfyui.sh` + `start-monitor.sh`.
+
+**Retired 2026-06-28** (disabled — do NOT re-enable, they fight
+start-cluster.sh): `spark-vllm-35b`, `spark-vllm-qwen-vl`,
+`spark-vllm-smolvlm-500m` (spark-01) and `spark-vllm` (spark-02). Their
+orphan `~/admin/start-vllm-*.sh` scripts remain on disk but are unwired.
+**spark-02 needs nothing enabled** — its endpoints (TP=2 worker + 4B) are
+launched from spark-01 over ssh.
+
+**To change the layout, edit in one place** — the relevant recipe (in this
+repo) and/or the matching block in `start-cluster.sh`. Do not reintroduce
+per-model systemd units.
+
+**Boot-path caveat:** validated only by idempotency (the skip path) and by
+the exact launch commands used in the 2026-06-28 restore — the script's
+*launch* path only fires from an empty/reboot state. Prove end-to-end
+recovery with a controlled reboot of both Sparks: reboot spark-02 first,
+let it return to ssh-reachable, then reboot spark-01 and watch
+`journalctl -u spark-services -f` for the `[start-cluster ...]` lines.
 
 ---
 

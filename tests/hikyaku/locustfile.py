@@ -11,10 +11,10 @@ Quickstart:
     pip install locust
 
     # web UI at http://localhost:8089 — set users + spawn rate, then start
-    locust -f locustfile.py --host http://limone.royal-armadillo.ts.net:4000
+    locust -f locustfile.py --host http://limone:4000
 
     # headless (command-line, no UI) — auto-stop after duration
-    locust -f locustfile.py --host http://limone.royal-armadillo.ts.net:4000 \\
+    locust -f locustfile.py --host http://limone:4000 \\
         --headless --users 1000 --spawn-rate 100 --run-time 60s
 
 Modes (set via env var before invoking locust):

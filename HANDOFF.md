@@ -18,42 +18,32 @@ journal). This file is short on purpose — read those for depth.
      where the per-scenario verdicts, KNOWN-ISSUES, and Pro-tier
      requirements drafts live.
 
-## Current operational state (as of this handoff)
+## Current operational state (2026-06-28)
 
-| host | port | container | model | persistent |
-|---|---|---|---|---|
-| spark-01 | 3041 | vllm_mtp | Qwen3.6-27B-AWQ-INT4 + native MTP | ✓ via `~/admin/start-vllm.sh` |
-| spark-02 | 3042 | vllm_mtp | Qwen3.6-27B-AWQ-INT4 + native MTP | ✓ via systemd `spark-vllm.service` |
-| spark-02 | 3043 | vllm_qwen_vl | Qwen2.5-VL-3B-Instruct (vision) | **✗ NOT persistent** — reboot kills it |
-| limone | 4000 | (Go process) | hikyaku proxy | (proxy-side) |
+Full cluster restored after a power loss and made **reboot-persistent**.
+The durable description is **KNOWLEDGE.md §11** (boot/recovery) — this is
+just the live snapshot:
 
-35B-A3B is **not currently running anywhere** — openclaw was redirected
-to HuggingFace inference earlier; revisit if you want it local again.
+| host:port | container | model | image |
+|---|---|---|---|
+| spark-01:3042 | vllm_tp2 | Qwen3.6-27B-FP8, **TP=2** (head here, worker on spark-02), text-only | v0231 |
+| spark-01:3040 | vllm_35b | Qwen3.6-35B-A3B-FP8, **MTP-OFF**, 128k | v0231 |
+| spark-02:3043 | vllm_4b | Qwen3-4B-Instruct-2507-FP8 utility, 2048 ctx | v0231 |
+| limone:4000 | (Go) | hikyaku proxy | — |
 
-> ⚠️ **The table above is STALE** (pre-2026-06 setup). See the dated
-> update below for current reality.
-
-### Update 2026-06-21
-
-- **spark-01:3040 `vllm_35b` = `Qwen/Qwen3.6-35B-A3B-FP8` + MTP=2**, now on
-  the **vLLM 0.23.1 test image** (`vllm-node-tf5-v0231`), gmu 0.43, 262K,
-  ~8× KV concurrency. Multimodal (vision tower loaded) — currently also
-  serving receipt OCR. Config lives on branch `sync-upstream-0231`
-  (not yet promoted to main / not yet on spark-02).
-- **`vllm_qwen_vl` (Qwen3-VL-30B-A3B-Instruct-FP8) — PARKED 2026-06-21.**
-  Its real job is **grounding for the behavioral-cloning facility**
-  (pixel-accurate on-screen localization), *not* receipt OCR. Stopped to
-  free ~42 GiB after the 35B-A3B-FP8 (multimodal + MTP) matched it on 5
-  easy receipts. **Two reasons that comparison is weak — re-validate
-  before retiring:**
-  1. *OCR-parity ≠ grounding-parity.* Reading a receipt says nothing
-     about pixel-accurate grounding, which is the VL's specialized job.
-  2. *The perf test was swap-confounded.* All 16 GiB swap was in use
-     during the run, so the VL's ~30% slower number is unreliable — it
-     could be swap thrashing (KNOWLEDGE §6: ~50% slowdowns from
-     co-located swap pressure), not MTP or model quality.
-  - Restore: `./run-recipe.py qwen3-vl-30b-a3b-instruct-fp8 --solo
-    --name vllm_qwen_vl -d` (still on the 0.19.2 `vllm-node-tf5` image).
+- All on the 0.23 image `vllm-node-tf5-v0231`, **prefix-caching OFF**
+  (KNOWLEDGE §3).
+- **35B is MTP-off on purpose** — native MTP loops on Qwen MoE under
+  agentic load (KNOWLEDGE §5); MTP-off is slower but stable. DFlash (the
+  separate-draft alternative) is parked on unmerged vLLM #40898
+  (KNOWLEDGE §4; tracking ticket #46105).
+- **The 27B TP=2 API server is on the HEAD node only (spark-01:3042)** —
+  point hikyaku/clients there, never spark-02.
+- Brought up / recovered by `~/admin/start-cluster.sh` (idempotent, single
+  source of truth). The old per-model systemd units were disabled
+  2026-06-28 — see KNOWLEDGE §11.
+- Config lives on branch `sync-upstream-0231` (not promoted to main, by
+  choice).
 
 ## Major decisions made (durable)
 
@@ -108,11 +98,14 @@ any future benchmarking on a new test rig.
 ## What's next (priority-ordered)
 
 ### Immediate — small unblocks
-1. **Persist `vllm_qwen_vl` across reboots.** Mirror the existing
-   spark-02 systemd pattern: add `~/admin/start-vlm.sh` and
-   `services/spark-vlm.service`, install + enable. ~5 min job.
-2. **Wire VLM into hikyaku** as `gresh-vision` route → `spark-02:3043`,
-   `strategy: single`. ~3 min on the proxy config + SIGHUP.
+1. **Validate boot recovery with a controlled reboot** of both Sparks
+   (spark-02 first → ssh-reachable, then spark-01; watch
+   `journalctl -u spark-services -f`). `start-cluster.sh`'s launch path
+   is only idempotency-validated so far — see KNOWLEDGE §11 caveat.
+2. **Wire the 4B into hikyaku** as `gresh-mini` → `spark-02:3043`,
+   `strategy: single`. The endpoint is up; just needs the proxy route + SIGHUP.
+3. **DFlash on 35B** — parked on unmerged vLLM #40898; revisit when
+   ticket #46105 lands (KNOWLEDGE §4). MTP-off is the stable answer meanwhile.
 
 ### Hikyaku — Phase 2.5 work (defenders) — DONE
 Loop detection, zero-content detection, and drop-empty all landed in
@@ -176,9 +169,9 @@ tests/hikyaku/                   — full perf-testing toolkit
   TUNING.md                      — OS pre-flight checklist
   TUNING-REPORT.md               — perf testing journal + addendum
 
-recipes/qwen3.6-27b-awq-int4-mtp.yaml   — main coding model
-recipes/qwen2.5-vl-3b.yaml              — VLM (NEW this session)
-recipes/qwen3.6-35b-a3b-fp8.yaml        — 35B (currently unused)
+recipes/qwen3.6-27b-fp8-mtp-vlm.yaml    — 27B FP8, used for TP=2 (text via --language-model-only)
+recipes/qwen3.6-35b-a3b-fp8-nomtp.yaml  — 35B A3B, MTP-off (stable agentic)
+recipes/qwen3-4b-instruct-2507-fp8.yaml — small text utility (spark-02)
 ```
 
 `limone` proxy config is in the hikyaku repo (separate, on the Jetson),
