@@ -1,0 +1,104 @@
+# Recipe: Qwen/Qwen3.6-35B-A3B-FP8 with native MTP speculative decoding.
+#
+# Multimodal — vision tower stays loaded (no --language-model-only) so this
+# instance can serve as the VLM for agentic vision workloads. 65K context
+# window (vs 131K default) keeps KV-cache memory headroom comfortable while
+# still being plenty for short interactive turns.
+#
+# Risk: official FP8 ships without MTP heads → startup error like
+
+recipe_version: "1"
+name: Qwen36-35B-A3B-FP8-noMTP
+description: vLLM serving Qwen3.6-35B-A3B-FP8 with native MTP, multimodal enabled
+
+model: Qwen/Qwen3.6-35B-A3B-FP8
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.6-chat-template
+  # FlashQLA: Blackwell GDN prefill kernel. DISABLED for the vLLM 0.23
+  # image — its patch target (vllm/.../mamba/gdn_linear_attn.py) was
+  # relocated/restructured in 0.23, so the mod fails ("missing
+  # gdn_linear_attn.py") and aborts launch. Re-enable only after the
+  # mod's patch path is updated for 0.23, OR confirm 0.23's native GDN
+  # prefill is good enough to drop it. Still valid on the 0.19.2 image.
+  # - mods/flashqla
+
+defaults:
+  port: 3040
+  host: 0.0.0.0
+  tensor_parallel: 1
+  # gmu sized to coexist with the Qwen3-VL-30B-A3B (gmu 0.35) on
+  # spark-01, leaving ~4 GiB host headroom. 0.43 yields ~12.6 GiB KV
+  # (~298K tokens), enough to back the full 262K window at >1x
+  # concurrency. NOTE the coupling: max_model_len and gmu move together
+  # — at the old 0.36 the KV pool only backed ~76K tokens, so 262144
+  # would NOT start there (vLLM refuses when KV can't hold one full
+  # sequence). If you drop gmu, drop max_model_len to match; if the VL
+  # is removed, gmu can go to ~0.5 for more KV/concurrency.
+  gpu_memory_utilization: 0.43
+  max_model_len: 262144
+  max_num_batched_tokens: 16384
+  # 4 concurrent slots is plenty for serial agentic flows. Multiple
+  # virtual-model routes (thinker, instruct, etc.) share these slots
+  # rather than each spawning a separate 35B instance — see hikyaku
+  # config patterns like gresh-coder vs gresh-coder-moe.
+  max_num_seqs: 4
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  # Pin the CuTe/CUTLASS DSL to this GPU's compute capability (SM121a).
+  # Harmless to keep; used by tilelang/CUTLASS code paths (e.g. FlashQLA).
+  CUTE_DSL_ARCH: sm_121a
+  # Keep the API connection alive through multi-minute streamed
+  # generations (long agentic turns / deep-context responses) so the
+  # client isn't dropped mid-stream.
+  VLLM_HTTP_TIMEOUT_KEEP_ALIVE: '600'
+  # FP8 MoE backend: vLLM auto-selects, and on GB10 it lands on TRITON,
+  # which emits "Using default MoE config — performance might be
+  # sub-optimal" (no tuned per-shape config for E=256,N=512).
+  #   - VLLM_FP8_MOE_BACKEND is NOT a real vLLM env var (verified: absent
+  #     from the codebase) — it is a no-op. Do not use it.
+  #   - The real knob is VLLM_USE_FLASHINFER_MOE_FP8=1, but: TESTED on
+  #     spark-01 2026-06-21 → HARD FAIL at startup:
+  #       "NotImplementedError: Found VLLM_USE_FLASHINFER_MOE_FP8=1, but
+  #        no FlashInfer FP8 MoE backend supports the configuration."
+  #     Neither CUTLASS nor TRT-LLM FlashInfer FP8 MoE supports this
+  #     model's shape (E=256,N=512, block-scaled fp8) on GB10/sm121a in
+  #     image vllm-node-tf5 (vLLM 0.19.2rc1.dev4). Do NOT re-enable
+  #     without a newer build that adds the kernel. The only lever to
+  #     clear the Triton "sub-optimal config" warning is the per-shape
+  #     Triton MoE tuning sweep (see KNOWLEDGE §MoE tuning).
+  # VLLM_USE_FLASHINFER_MOE_FP8: '1'   # ← confirmed broken on GB10, leave off
+
+# Prefix caching is DISABLED below (--no-enable-prefix-caching). It
+# corrupts Qwen MoE output under concurrent shared-prefix load —
+# cross-request KV-state contamination (a vendor name landing in the
+# currency field, one receipt's data in another's output, token
+# insertion). Confirmed 2026-06-22 by a single-variable A/B (on=corrupt,
+# off=clean, N=1==N=4==N=8). A fixed sampling seed made NO difference,
+# proving it's KV/prefix-cache state — not sampling RNG. Same bug class
+# eugr root-caused as the 0.20 regression. Do NOT re-enable without a
+# vLLM build proven clean via a single==multi acceptance test.
+# See KNOWLEDGE §3 "Prefix caching corrupts Qwen MoE under concurrency".
+command: |
+  vllm serve Qwen/Qwen3.6-35B-A3B-FP8 \
+    --served-model-name Qwen/Qwen3.6-35B-A3B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype fp8 \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --no-enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.6.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    -tp {tensor_parallel}
