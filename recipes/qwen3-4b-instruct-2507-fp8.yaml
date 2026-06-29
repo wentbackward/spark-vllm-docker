@@ -17,7 +17,12 @@ defaults:
   port: 3043
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.08
+  # 0.08 was too marginal at cold boot: when this launches alongside the
+  # TP=2 worker (gmu 0.30) still claiming memory on spark-02, KV-cache
+  # profiling found "No available memory for the cache blocks" and the
+  # engine died (2026-06-28). 0.12 (~14.5 GiB) gives weights + 2048-ctx KV
+  # comfortable margin even mid-race, still tiny on a 121 GiB node.
+  gpu_memory_utilization: 0.12
   max_model_len: 2048
 
 env:

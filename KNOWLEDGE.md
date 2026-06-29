@@ -20,7 +20,10 @@ Two **NVIDIA DGX Spark** nodes, identical:
 - **121.69 GiB unified VRAM** per node — GPU and CPU share this pool
 - Memory bandwidth: **~273 GB/s** (this is the dominant ceiling for dense
   decode workloads — see §6)
-- Two ConnectX-7 200 GbE NICs per node (only one cable connected; see §2)
+- Two ConnectX-7 200 GbE ports per node (only one cable connected). Each
+  port is wired at 200 Gb/s but host-attached at **PCIe Gen5 x4 → ~100 Gb/s
+  usable per rail**; see §2 for the bandwidth measurements and the
+  two-rails-on-one-cable detail.
 - Filesystem: standard Ubuntu, HF cache at `~/.cache/huggingface/hub/`
 - **`gpu_memory_utilization` reserves a fraction of TOTAL VRAM**, not of
   remaining VRAM. Two vLLM processes on one node summing to >1.0 will OOM.
@@ -55,8 +58,11 @@ The two Sparks are connected with **one** CX7 cable on port 1
 both `192.168.200.0/24` and `192.168.100.0/24` subnets. As a result:
 
 - `enp1s0f1np1` (cabled) gets BOTH `192.168.200.x/24` AND `192.168.100.x/24`
-- `enP2p1s0f1np1` (NOT cabled) ALSO gets `192.168.200.x/24` — stale,
-  but appears UP because of internal SoC link state
+- `enP2p1s0f1np1` ALSO gets `192.168.200.x/24` and appears UP — **this is a
+  REAL second PCIe rail, not a phantom** (a previous note here called it
+  stale/uncabled; that was wrong — see the bandwidth subsection below). It is
+  almost certainly the second x4 rail of the *same* physical cable, which is
+  exactly why both ports land on `192.168.200.x` and trip autodiscover.
 
 The repo's `autodiscover.sh` refuses to choose between two interfaces on
 the same subnet and exits with:
@@ -76,6 +82,39 @@ IB_IF=rocep1s0f1
 
 (`rocep1s0f1` is the RoCE device matching `enp1s0f1np1` — confirm with
 `ibdev2netdev`.)
+
+### CX7 bandwidth: PCIe Gen5 x4 per rail (~100 Gb/s), 200 nominal
+
+Measured 2026-06-28 with RDMA `ib_write_bw` over RoCEv2 (after a "why is it
+slow / why doesn't nv-monitor show traffic" investigation — the slowness was
+*not* the fabric, see §5/§6):
+
+- Each CX7 port negotiates **200 Gb/s on the wire** (ethtool / sysfs
+  `speed=200000`), but its host attach is **PCIe Gen5 x4**
+  (`current_link_width == max_link_width == 4` on all four functions — i.e.
+  at capability, *not* degraded). Gen5 x4 ≈ 128 Gb/s raw → **~100 Gb/s
+  effective RDMA per rail**: single-QP `ib_write_bw` = 99.9 Gb/s, and **8 QPs
+  gave no more** (94.5), so ~100 is the real per-rail ceiling, not a
+  tuning/CPU artefact.
+- **RDMA bypasses the kernel network stack**, so RoCE traffic is INVISIBLE to
+  `/proc/net/dev` and anything built on it (nv-monitor). During TP=2 decode
+  the kernel counters read ~0 while the RoCE hardware counters showed
+  ~49 MB/s. **Never diagnose fabric health from nv-monitor / kernel byte
+  counters** — read `/sys/class/infiniband/<dev>/ports/1/{counters,hw_counters}`
+  or run `ib_write_bw` instead.
+- **Decode is latency-bound, not bandwidth-bound.** TP=2 token all-reduce
+  moves KB-scale tensors; measured ~49 MB/s = <0.5% of one rail. So the
+  fabric is never the inference bottleneck — GPU memory bandwidth
+  (273 GB/s, §6) is. More network would not speed up decode at all.
+- **Reaching the quoted 200 Gb/s / 25 GB/s "unit-wide lane limit" needs both
+  x4 rails aggregated.** UNCONFIRMED here: a simultaneous 2-rail
+  `ib_write_bw` summed to only ~107 Gb/s, but that test is contaminated —
+  both rails sit on the same `192.168.200.0/24`, so kernel routing collapses
+  both streams onto one rail (the same ambiguity that breaks autodiscover).
+  A clean 2-rail test requires the rails on **separate subnets**. Only worth
+  doing for BULK transfer (model loads, rsync over CX7) — it does nothing for
+  latency-bound decode. Health/error counters on the active rail were all
+  zero (no `port_xmit_wait`, no retransmits, no seq errors).
 
 ### SSH over the CX7 link
 

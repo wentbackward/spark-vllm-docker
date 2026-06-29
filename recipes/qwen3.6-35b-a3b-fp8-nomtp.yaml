@@ -48,6 +48,11 @@ defaults:
 
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  # Model is cached locally; force offline so a cold boot (no internet yet,
+  # e.g. after a power outage) doesn't crash on an HF metadata fetch
+  # ("Cannot send a request, as the client has been closed"). Caused the
+  # 2026-06-28 boot failure on :3040. The other recipes already set this.
+  HF_HUB_OFFLINE: 1
   # Pin the CuTe/CUTLASS DSL to this GPU's compute capability (SM121a).
   # Harmless to keep; used by tilelang/CUTLASS code paths (e.g. FlashQLA).
   CUTE_DSL_ARCH: sm_121a

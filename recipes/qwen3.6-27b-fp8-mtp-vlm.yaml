@@ -5,10 +5,18 @@
 # from the coder recipe:
 #   1. NO --language-model-only  → vision tower loads (multimodal), so
 #      this can run the receipt/vision concurrency tests.
-#   2. --no-enable-prefix-caching → prefix caching corrupts output under
-#      concurrent shared-prefix load (see KNOWLEDGE §3 "Prefix caching
-#      corrupts Qwen MoE"; baked off here so concurrency benchmarks are
-#      measuring real, uncorrupted throughput).
+#   2. --enable-prefix-caching → ON as of 2026-06-28 for the production
+#      TP=2 coder use of this recipe. The §3 corruption (KNOWLEDGE "Prefix
+#      caching corrupts Qwen MoE under concurrency") was confirmed on the
+#      *MoE* 35B-A3B under CONCURRENT shared-prefix load. This is the
+#      *dense* 27B driving a single interactive coding session (concurrency
+#      ≈ 1, append-only context) — neither trigger applies, and the 27B's
+#      own prod recipe historically ran with it ON. The win is large:
+#      without it, append-only agent loops re-prefill the whole growing
+#      context EVERY turn (~quadratic in turns); with it, only the newly
+#      appended tokens prefill (TTFT stays flat). If this endpoint is ever
+#      fanned CONCURRENT shared-prefix requests, re-verify with §3's
+#      single==multi acceptance gate or set --no-enable-prefix-caching.
 #   3. NO mods/flashqla → its patch target (gdn_linear_attn.py) was
 #      relocated in 0.23 and aborts launch; the dense 27B doesn't use GDN
 #      anyway. (Re-add only on the 0.19.2 image.)
@@ -17,7 +25,7 @@
 
 recipe_version: "1"
 name: Qwen36-27B-FP8-MTP-VLM
-description: vLLM serving Qwen3.6-27B-FP8 with MTP, vision enabled, prefix-caching off (0.23 image)
+description: vLLM serving Qwen3.6-27B-FP8 with MTP, vision-capable, prefix-caching ON (0.23 image)
 
 model: Qwen/Qwen3.6-27B-FP8
 
@@ -54,7 +62,7 @@ command: |
     --kv-cache-dtype fp8 \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
-    --no-enable-prefix-caching \
+    --enable-prefix-caching \
     --enable-chunked-prefill \
     --chat-template qwen3.6.jinja \
     --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
