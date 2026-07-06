@@ -65,6 +65,6 @@ command: |
     --enable-prefix-caching \
     --enable-chunked-prefill \
     --chat-template qwen3.6.jinja \
-    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
-    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
+    --default-chat-template-kwargs '{{"preserve_thinking": false}}' \
+    --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":3}}' \
     -tp {tensor_parallel}

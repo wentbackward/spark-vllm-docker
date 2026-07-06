@@ -662,9 +662,12 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   bimodal — some forward passes accept all 15 drafts, others only a couple.
   MTP variance is much lower because `num_speculative_tokens=2` caps the
   range.
-- **MTP `num_speculative_tokens` is bounded by training. For Qwen3.6-27B,
-  2 is the ceiling — 3 is empirically net-negative.** Tested FP8 + MTP=3
-  on real coding workload (2026-05-12):
+- **MTP `num_speculative_tokens=3` is WORKLOAD-DEPENDENT, not a flat
+  ceiling** (revised 2026-06-29 — see the UPDATE at the end of this bullet).
+  The 2026-05-12 test below found it net-negative on *that* workload; a
+  2026-06-29 re-test found it net-POSITIVE on the current TP=2 coder. Both
+  results stand — **per-position acceptance is the deciding variable.**
+  Original FP8 + MTP=3 test (2026-05-12, real coding workload):
 
   | spec position | acceptance rate (real coding) |
   |---|---|
@@ -685,7 +688,24 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   rate"* — believe it. The Qwen MTP heads are trained for 2-token
   lookahead; position 2 is essentially uncalibrated. Also: MTP=3
   previously caused thinking-loop behaviour on agentic workloads
-  (the original reason prod sits at 2). Keep `num_speculative_tokens: 2`.
+  (the original reason prod sat at 2).
+
+  **UPDATE 2026-06-29 — MTP=3 re-tested on the TP=2 FP8 coder with prefix
+  caching ON: NET-POSITIVE here; the 2026-05 result was workload-specific.**
+  Measured per-position acceptance on predictable structured code output:
+  **0.86-0.97 / 0.61-0.89 / 0.49-0.83** (position 0/1/2) — the 3rd draft
+  runs **49-83%**, far above the ~25-30% break-even (vs 0.15-0.30 in May).
+  Mean acceptance length 3.0-3.7 (of max 4) vs MTP=2's 2.6 (of max 3);
+  throughput **23.5 t/s vs MTP=2's 22.8** (flat-to-better, NOT the ~30%
+  drop seen in May). The deciding variable is acceptance: on
+  high-predictability coding (deep context + prefix cache) the 3rd draft
+  pays; on lower-acceptance content it reverts to the May picture, so this
+  is not a blanket "always use 3." **Caveat:** the OTHER MTP=3 risk —
+  thinking-loops on real *agentic* runs — is behavioural and won't show in
+  synthetic throughput tests; watch for it in live use (now partly
+  mitigated by `preserve_thinking=false` on this endpoint, set the same
+  day). Prod `qwen3.6-27b-fp8-mtp-vlm` (the TP=2 coder) runs
+  `num_speculative_tokens: 3` as of 2026-06-29.
 
 ---
 
@@ -900,7 +920,9 @@ the TP=2 and 4B steps (both depend on spark-02).
 
 **Boot chain (spark-01):** `spark-services.service` (enabled) →
 `start-services.sh` → `start-vllm.sh` (now just `exec start-cluster.sh`) +
-`start-comfyui.sh` + `start-monitor.sh`.
+`start-monitor.sh`. (ComfyUI was removed from boot 2026-06-29 — as-needed
+only; run `~/admin/start-comfyui.sh` manually and re-check its
+`--reserve-vram` against the current vLLM layout first.)
 
 **Retired 2026-06-28** (disabled — do NOT re-enable, they fight
 start-cluster.sh): `spark-vllm-35b`, `spark-vllm-qwen-vl`,
@@ -913,12 +935,25 @@ launched from spark-01 over ssh.
 repo) and/or the matching block in `start-cluster.sh`. Do not reintroduce
 per-model systemd units.
 
-**Boot-path caveat:** validated only by idempotency (the skip path) and by
-the exact launch commands used in the 2026-06-28 restore — the script's
-*launch* path only fires from an empty/reboot state. Prove end-to-end
-recovery with a controlled reboot of both Sparks: reboot spark-02 first,
-let it return to ssh-reachable, then reboot spark-01 and watch
-`journalctl -u spark-services -f` for the `[start-cluster ...]` lines.
+**Hardened 2026-07-06** after a real dual-node power-loss boot exposed two
+launch bugs (the systemd→start-cluster chain itself fired correctly):
+1. **Launches must be SERIAL, not parallel.** Dispatching all three models
+   at once (`-d` back-to-back) makes their vLLM memory profilers race at
+   cold boot — both the 35B and 4B died with "No available memory for the
+   cache blocks" while the others were mid-load. The script now launches
+   TP=2 → wait-until-serving → 35B → wait → 4B (~5-10 min total,
+   deterministic). Don't "optimize" it back to parallel.
+2. **Stale containers must be torn down before launch.** Docker's restart
+   policy revives the old containers at boot as empty shells with dead Ray
+   state; the TP=2 relaunch collided with one
+   (`ray ActorHandleNotFoundError: ... previous session`). The script now
+   `docker rm -f`s any container whose port isn't serving before launching
+   into it.
+The hardened script recovered the full cluster from exactly that broken
+state in 5.5 min (validated 2026-07-06). Remaining unproven: a cold boot
+that runs the hardened script *from systemd* end-to-end — expected fine
+(chain + script each proven separately); confirm on the next reboot via
+`journalctl -u spark-services` `[start-cluster ...]` lines.
 
 ---
 
