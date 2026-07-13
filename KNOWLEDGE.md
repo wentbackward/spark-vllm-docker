@@ -723,7 +723,41 @@ Working budgets per model at full context:
 |---|---|---|---|
 | 27B-FP8 | 0.7 | ~85 GiB | ~57 GiB |
 | 27B-AWQ-INT4 | 0.7 | ~85 GiB | ~71 GiB |
-| 35B-A3B-FP8 | 0.40 | ~48 GiB | ~14 GiB |
+| 35B-A3B-FP8 | 0.38 | ~46 GiB | ~5.7 GiB (see floor note below) |
+
+### 35B-A3B-FP8 memory floor — measure, don't trust old KV snapshots (2026-07-07)
+
+Trimming the 35B's gmu to free memory for a co-located ComfyUI/Flux.2
+node ran into a hard floor. Measured on a **clean** spark-01 (117 GiB
+free, nothing else on GPU), vLLM 0.23 image, max_model_len 131072,
+max_num_seqs 4, fp8 KV:
+
+| gmu | budget | Available KV | Concurrency @131K | Result |
+|---|---|---|---|---|
+| 0.32 | 38.9 GiB | **−1.4 GiB** | — | **FAILS** (no cache blocks) |
+| 0.38 | 46.2 GiB | 5.72 GiB (566K tok) | **4.32×** | serves; ~min for 4 slots |
+| 0.40 | 48.7 GiB | ~8.3 GiB (est.) | ~5× | — |
+
+- **Hard floor ≈ 40 GiB**: 34.23 GiB weights + ~6 GiB fixed overhead
+  (activation + non_torch + ~0.56 GiB cudagraph). This is independent of
+  gmu, so the model **cannot run below ~gmu 0.34** — below that KV goes
+  negative and the engine aborts with "No available memory for the cache
+  blocks". Practical minimum for 4 full-context slots is **gmu 0.38**.
+- **Only ~2.4 GiB is reclaimable** by dropping 0.40→0.38. To free more you
+  must cut `max_model_len` (KV per full seq ≈ 1.35 GiB at 131K); e.g. 65K
+  at 4× needs ~2.7 GiB KV vs 5.7 at 131K, worth ~3 GiB more — but clips
+  long document-processing turns.
+- **The `non_torch` floor drifts between boots.** A 2026-07-06 snapshot of
+  this exact recipe at gmu 0.40 reported **15.97 GiB KV / 12.11×** — NOT
+  reproducible on 2026-07-07 (floor was ~8 GiB higher). The 12× figure was
+  stale and led to a wrong "free ~10 GiB" estimate. **Always read the live
+  `Available KV cache memory` / `Maximum concurrency` lines from the target
+  launch's log — never size off a previous boot's numbers.**
+- **Buffer-cache flush is NOT the fix here.** `drop_caches` (the UMA quirk,
+  §quirk) was ruled out — flushing 67→0.8 GiB buff/cache did not change the
+  negative-KV result. The floor is real process memory, not cache.
+- To read the numbers: `docker logs <ctr> 2>&1 | grep -iE 'Available KV
+  cache memory|Maximum concurrency'`.
 
 ### Co-location patterns and swap
 
@@ -737,6 +771,48 @@ Lessons from running multiple instances on one Spark:
   (~50% slowdown from swap pressure, not GPU contention).
 - **Distribution across both Sparks** keeps each node ~50-90 GiB used,
   no swap, predictable performance.
+
+### NVRM unified-memory OOM hard-hangs the node — not thermal (2026-07-12)
+
+spark-01 "died" during heavy ComfyUI/Flux.2 rendering co-located with the
+35B. **It was memory exhaustion, not thermal** — an important distinction
+because the two have opposite fixes:
+
+- Kernel log before the hang: repeated
+  `NVRM: ... Out of memory [NV_ERR_NO_MEMORY] ... _memdescAllocInternal @
+  mem_desc.c:1359`, and **zero thermal-trip / critical-temp messages**. GPU
+  was ~70 °C with no throttle on the next boot.
+- **The Linux OOM-killer does NOT fire** on this class of failure — the NVRM
+  (GPU driver) allocator fails on the unified pool and the **whole node
+  hard-hangs and must be power-cycled** (it did not auto-reboot; ~30 min
+  down until manual power-cycle). So there's no graceful process kill to
+  save you — overcommitting the 122 GiB unified pool takes the box down.
+- **Watch `free -h`, not temps**, when stacking Comfy/Flux.2 on vLLM. Keep
+  total committed under ~110 GiB. Two concurrent Flux.2 pipelines on top of
+  the 35B is the danger zone.
+
+**ComfyUI memory guards on the unified box (start-comfyui.sh):**
+
+- `--reserve-vram N` is **relative to CUDA-free memory, not an absolute
+  cap.** ComfyUI reads real free memory via `torch.cuda.mem_get_info`, which
+  on the Spark correctly excludes vLLM's allocation — but it only tells Comfy
+  "use up to `free − N`". It does **not** bound Comfy's total, and it does
+  not react to a co-tenant (vLLM KV cache) growing *after* Comfy sized
+  itself.
+- **The trap:** killing 27B to "free memory for Comfy" *raises* Comfy's
+  ceiling — free jumps, so Comfy grabs more — same collision. The apparent
+  safety of a low `--reserve-vram` earlier was an accident of the other
+  models having already squeezed the pool.
+- **`--vram-headroom N`** (ComfyUI's DynamicVRAM, `--enable-dynamic-vram` is
+  default-on) is the correct guard: keeps N GiB **continuously free even
+  counting other apps**. Confirm it took: the log prints
+  `comfy-aimdo integrated Linux GPU RAM headroom: <N*1000> MB`.
+- **Deployed 2026-07-12:** spark-01 `--reserve-vram 16 --vram-headroom 8`
+  (caps Comfy ~44–52 GiB alongside the 35B); spark-02 `--reserve-vram 10
+  --vram-headroom 8`. Per-run overrides: `COMFY_RESERVE_VRAM`,
+  `COMFY_VRAM_HEADROOM`.
+- Reboot note: the boot chain relaunches 27B TP=2; Comfy is NOT in boot. If
+  you reboot mid-render, re-kill 27B before resuming heavy Comfy.
 
 ### Recommended balance
 

@@ -8,7 +8,13 @@
 # Layout:
 #   spark-01:3042  27B-FP8 TP=2 across both Sparks (head here), MTP=3,
 #                  prefix-caching ON, 262K, gmu 0.30/node, text-only
-#   spark-01:3040  35B-A3B-FP8, MTP-OFF (KNOWLEDGE §5), 128k, gmu 0.40
+#   spark-01:3040  35B-A3B-FP8, MTP-OFF (KNOWLEDGE §5), 128k, gmu 0.38
+#                  (KV trimmed 2026-07-07 to back ~4.3x @131K — matches
+#                   max_num_seqs=4. Measured floor: 34.2 GiB weights +
+#                   ~6 GiB fixed overhead = ~40 GiB, so 0.38 is near the
+#                   minimum that seats 4 full-context slots. 0.32 FAILS
+#                   (negative KV). Frees only ~2.4 GiB vs the old 0.40 —
+#                   the model can't go much lower without cutting context.)
 #   spark-02:3043  4B-Instruct-2507-FP8, small utility, 2048, gmu 0.12
 # All on the vLLM 0.23 image (vllm-node-tf5-v0231).
 #
@@ -84,7 +90,7 @@ else
     log "launching 35B-A3B-FP8 MTP-off..."
     ./run-recipe.py qwen3.6-35b-a3b-fp8-nomtp \
         --solo --name vllm_35b -t "$IMAGE" \
-        --gpu-mem 0.40 --max-model-len 131072 -d \
+        --gpu-mem 0.38 --max-model-len 131072 -d \
         || log "WARNING: 35B launch failed"
     if wait_port local 3040 42; then log "35B up on :3040"
     else log "WARNING: 35B not serving after 7 min — continuing"; fi
