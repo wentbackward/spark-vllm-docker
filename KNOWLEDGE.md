@@ -46,6 +46,42 @@ This dual-port-on-same-subnet config breaks the repo's `autodiscover.sh`
   **hikyaku** that routes client traffic to the right vLLM endpoint by
   model name. Proxy is no longer hosted on spark-01 itself.
 - Tailnet: both Sparks are joined and routable by hostname (`paul@spark-02`).
+- **Voice (TTS+STT)**: single container `clone-voice` on **spark-01:3030**
+  (tailnet `100.118.152.61:3030`), OpenAI-compatible `/v1/audio/speech` +
+  `/v1/audio/transcriptions`. TTS = **Chatterbox** (Resemble AI, MIT), STT =
+  Whisper. Source/recipe: `~/hacking/clone-voice-service` (github
+  wentbackward/clone-voice-service), run via `./run.sh`. Replaced F5-TTS
+  2026-07-19 (F5 read long text crammed — no learned duration predictor;
+  Chatterbox reads naturally, service sentence-chunks long text). Old F5 image
+  kept as `clone-voice:f5-legacy`.
+
+### Running non-vLLM ML packages on GB10 (sm_121a) — torch build recipe
+
+Reusable pattern learned deploying Chatterbox + Whisper (applies to any
+PyTorch package on the Spark). The GPU is **Blackwell sm_121a (cap 12,1)** and
+needs **CUDA 13**; only the **cu130 aarch64** torch wheels have working
+kernels for it.
+
+- **Install torch FIRST from cu130, then the package `--no-deps`** if the
+  package pins an older torch. Chatterbox pins `torch==2.6` (cu126, *no*
+  sm_121a) — installing it normally silently downgrades torch to a
+  CPU-fallback/incompatible build. Recipe:
+  ```
+  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu130
+  pip install -r requirements.txt        # deps EXCLUDING torch
+  pip install --no-deps chatterbox-tts   # so it can't drag torch back
+  ```
+  Verify with a real CUDA op (not just `is_available()`):
+  `torch.cuda.get_device_capability()` → `(12, 1)` and a `cuda` matmul.
+- **CosyVoice 2 does NOT build here** (evaluated, rejected 2026-07-19): pins
+  `torch==2.3.1`+cu121 (no sm_121a) *and* `tensorrt-cu12` / `onnxruntime-gpu`
+  / `deepspeed`, all hostile to aarch64+CUDA-13. Would need deep dep surgery.
+- Docker base for such services: **`nvidia/cuda:13.2.0-runtime-ubuntu24.04`**
+  (arm64) + `build-essential cmake` (some deps like `praat-parselmouth`
+  compile from source — a ~10 min LTO C++ build on ARM). Ubuntu 24.04 pip is
+  PEP-668 externally-managed → `pip --break-system-packages`.
+- `torchaudio.save` routes through `torchcodec` in ≥2.11 (not bundled) — write
+  audio with `soundfile` instead (also handles ogg/mp3/flac, no ffmpeg).
 
 ---
 
