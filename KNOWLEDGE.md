@@ -457,6 +457,25 @@ don't need to know which quant. To add multiple aliases:
   weeks), just don't put it in the coder slot. For coding use the
   27B FP8.
 
+  **UPDATE 2026-07-20 — some of that "just loops" was CONTEXT POLLUTION,
+  not raw ceiling.** The 35B-A3B recipe was still running
+  `preserve_thinking: true` (never got the 27B's fix), so old `<think>`
+  blocks accumulated in context every turn; combined with a long uncleared
+  openclaw session and near-greedy sampling (temp 0.4 / top_p 1.0 in
+  hikyaku), it degraded into message-level repetition loops (emitting an
+  acknowledgement over and over, never acting). Fixes: recipe now
+  `preserve_thinking: false`; hikyaku sampling to Qwen thinking values
+  (temp 0.6 / top_p 0.95 / top_k 20) + a `thinking_token_budget` (~1024) in
+  `extra_body`. Verified the raw model emits correct `tool_calls` on a clean
+  single-turn request (it read the docs and even inferred an undocumented
+  config key). After the fixes **+ a `/new` (clean context)**, it correctly
+  drove an agentic file-edit in openclaw. So: the model IS capable of
+  simple technical agentic work; **Qwen degrades sharply on polluted/long
+  context — context hygiene is a first-class requirement** (auto-summarize
+  then `/new`; abort loops early). Caveats: still over-confirms (mild
+  repetition), and remains LESS robust than the dense 27B under context
+  stress — for hard/long agentic coding the 27B FP8 is still the pick.
+
 ### VLMs that DON'T work in vLLM (don't reattempt without fresh evidence)
 
 - **`apple/FastVLM-*`**: architecture `llava_qwen2` not in vLLM's
