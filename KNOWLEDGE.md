@@ -402,7 +402,7 @@ phasing plan if you're implementing or extending it.
 |---|---|---|---|---|
 | Qwen3.6-27B-FP8 | FP8 | ~28 GiB | yes (text-only via `--language-model-only`) | Dense, coding-focused, 256K context |
 | cyankiwi/Qwen3.6-27B-AWQ-INT4 | AWQ-INT4 | ~14 GiB | text-only | Halves bandwidth → ~2× decode (see §5). **Use `max_model_len: 196608` (75% of 262K) and MTP `num_speculative_tokens: 2`**. Higher MTP causes output looping on real agentic workloads. |
-| Qwen3.6-35B-A3B-FP8 | FP8 | ~34 GiB | text | MoE, 3B active params, ~3× decode of dense 27B at FP8 |
+| Qwen3.6-35B-A3B-FP8 | FP8 | ~34 GiB | **yes (image + video)** | MoE, 3B active params, ~3× decode of dense 27B at FP8. Qwen3-VL-class — image AND video (no audio). See §video below. |
 | Qwen2.5-VL-3B-Instruct | FP16 | ~6 GiB | yes (vision) | Small fast VLM. First-class vLLM support, no `--trust-remote-code`. |
 
 Served-model-name is independent of the actual model directory.
@@ -475,6 +475,37 @@ don't need to know which quant. To add multiple aliases:
   then `/new`; abort loops early). Caveats: still over-confirms (mild
   repetition), and remains LESS robust than the dense 27B under context
   stress — for hard/long agentic coding the 27B FP8 is still the pick.
+
+### Qwen3.6-35B-A3B-FP8 multimodal: image + video, LIVE-VERIFIED (2026-07-20)
+
+The 35B-A3B is a **Qwen3-VL-class** model — its config has both
+`image_token_id` (248056) and `video_token_id` (248057), a `vision_config`,
+and `Qwen3VLProcessor` + `video_preprocessor_config.json`. On spark-01:3040
+we run it **without** `--language-model-only`, so the vision tower loads.
+Verified live on the running FP8 endpoint:
+
+- **Image**: sent a 1×1 PNG → answered "Pink" correctly.
+- **Video**: sent a 2-frame mp4 (green→yellow, base64 `video_url`) → answered
+  "green and yellow" correctly. So it genuinely decodes/understands *frames*,
+  not just accepts the upload.
+- **Audio: NO** — no audio encoder / no `audio_config` (that's what the
+  clone-voice Whisper STT on :3030 is for).
+
+**How to call it** (OpenAI chat/completions):
+- image: content part `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}`
+- video: content part `{"type":"video_url","video_url":{"url":"data:video/mp4;base64,…"}}`
+  (or an `http(s)://` URL).
+
+**Two gotchas that cost time — set these or you get empty output:**
+1. **Disable/cap thinking for VLM turns.** First attempts returned
+   `content:null, finish_reason:"length"` because reasoning ate the whole
+   token budget. Pass `extra_body={"chat_template_kwargs":{"enable_thinking":
+   false}}` (and/or a small `thinking_token_budget`), or give generous
+   `max_tokens`. With thinking off/capped it answered cleanly.
+2. **Frame/context budget.** Video expands to many image tokens fast — long
+   clips eat the 131K window + KV. Fine for short clips; sample frames for
+   anything long. (The endpoint had no `--limit-mm-per-prompt` set, so vLLM
+   defaults apply.)
 
 ### VLMs that DON'T work in vLLM (don't reattempt without fresh evidence)
 
