@@ -128,6 +128,39 @@ Two layers — and layer 2 is required for the accounting to be *authoritative*
 - Fold in the same pass: **confirm limone's hikyaku routes address the Sparks by
   tailscale MagicDNS, not `192.168.1.x`** (LAN-IP-change insulation).
 
+### 4-node network expansion (post-relocation) — added 2026-07-28
+Growing to 3 Sparks at the move, 4 later. Switches **ordered**: MikroTik
+**CRS504-4XQ-IN** (4× 100G QSFP28 fabric) + **CRS310-8G+2S+IN** (8× 2.5G RJ45 +
+2× 10G SFP+ management). Replaces the cheap TP-Link 4-port + direct-to-router.
+
+**Two-plane topology:**
+- **Fabric (100G, private):** each Spark's CX7 QSFP → CRS504. Replaces the
+  current direct spark-01↔02 cable. Static `192.168.200.x` per node
+  (.13/.12/.14/...). No internet on this plane.
+- **Management (2.5G):** each Spark's **`enP7s7` (2.5 GbE — verified 2026-07-28)**
+  + limone + laptop → CRS310; CRS310 → router. Carries internet, tailscale,
+  hikyaku LAN traffic, HF pulls. *Must be 2.5G, not 1G, or it throttles the Sparks.*
+
+**Shopping / cabling:**
+- **3× QSFP28 100G DACs** (buy now — existing CX7 cable is too short to reuse;
+  4th DAC when the 4th Spark lands; CRS504 has the spare port). Use
+  MikroTik-compatible generic DACs; verify link-up (NVIDIA↔MikroTik DAC quirks).
+- Cat6 for the 2.5G side. **Router uplink via a CRS310 SFP+ port** (not a 2.5G
+  RJ45) — at 4 Sparks the eight 2.5G ports are exactly full (4 Sparks + limone +
+  laptop + NAS + uplink).
+
+**Config work (the real effort, not the cabling):**
+- New Spark(s): static CX7 IP in netplan `40-cx7.yaml` + 2.5G mgmt; add to `.env`
+  `CLUSTER_NODES`. `autodiscover.sh` is unreliable here (KNOWLEDGE §2) — do manually.
+- **`start-cluster.sh` is 2-node-shaped** (spark-01 head / spark-02 worker) —
+  needs an **N-node redesign**. Decide the model layout deliberately: one big
+  model TP=3/TP=4 vs. independent per-node endpoints vs. DP replicas.
+- **RoCE-over-switch:** the direct cable "just worked"; through the CRS504 you
+  need lossless ethernet (**PFC/ECN**) or TP throughput suffers. Spark TP decode
+  is *latency*-bound over the fabric (KNOWLEDGE §2), so **benchmark `ib_write_bw`
+  + a TP decode run through the CRS504 before trusting 4-node TP** — the extra
+  hop may bite. MikroTik RoCE tuning is more DIY than a Mellanox switch.
+
 ### Immediate — small unblocks
 1. **Validate boot recovery with a controlled reboot** of both Sparks
    (spark-02 first → ssh-reachable, then spark-01; watch
