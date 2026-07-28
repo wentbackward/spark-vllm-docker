@@ -97,6 +97,37 @@ any future benchmarking on a new test rig.
 
 ## What's next (priority-ordered)
 
+> ⚠️ The "Current operational state" table above is from **2026-06-28** and is
+> now stale — much changed in the 2026-07 sessions (voice service rebuilt to
+> Chatterbox-Turbo TTS + Whisper STT in one container on spark-01:3030; 35B
+> `preserve_thinking:false`; 35B verified image+**video** capable; 27B TP=2
+> parked). See KNOWLEDGE.md §4/§6/§11 and recent commits for the current picture.
+
+### Post-relocation (NEXT MAJOR TASK) — added 2026-07-28
+Cluster is being **physically relocated** (~2026-07-30; both Sparks powered
+down and moved). Boot-readiness was validated 2026-07-28 (systemd/docker/
+scripts all enabled; graceful degradation confirmed). **Physical risks to watch
+on power-up:** CX7 cable must go back to the SAME port each end (marked before
+takedown); LAN `192.168.1.x` IPs will change at the new site (cluster rides
+static CX7 `.200.x` + tailscale, so insulated — but anything addressing the
+Sparks by LAN IP breaks). Post-move checklist is in the last chat + KNOWLEDGE §11.
+
+**Then: add token auth + usage accounting (once hikyaku-pro is installed).**
+Two layers — and layer 2 is required for the accounting to be *authoritative*
+(today every vLLM endpoint is open `0.0.0.0`/no-key, so direct hits bypass the meter):
+1. **hikyaku-pro = client-facing door:** per-user tokens → validate + meter
+   (accounting) + quota/route → forward to backend. Confirm it *rejects* unknown
+   tokens (401), not just meters known ones.
+2. **Lock the vLLM backends (hikyaku-only):** set vLLM **`--api-key`** (shared
+   secret) so direct hits to `:3040` etc. 401; optionally bind endpoints to
+   tailnet/localhost instead of `0.0.0.0`.
+   - Secret via `.env` / `VLLM_API_KEY` — **NOT** hardcoded (this repo is public).
+     Wire through `run-recipe.py` / `start-cluster.sh`. Every direct client (test
+     scripts, tooling) then needs the key.
+   - Verify end-to-end: direct-to-`:3040` refused, via-hikyaku works.
+- Fold in the same pass: **confirm limone's hikyaku routes address the Sparks by
+  tailscale MagicDNS, not `192.168.1.x`** (LAN-IP-change insulation).
+
 ### Immediate — small unblocks
 1. **Validate boot recovery with a controlled reboot** of both Sparks
    (spark-02 first → ssh-reachable, then spark-01; watch
