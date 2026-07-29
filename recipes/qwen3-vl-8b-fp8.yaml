@@ -37,8 +37,16 @@ defaults:
   port: 3041
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.22
-  max_model_len: 32768
+  # 0.14 (~17 GiB) / 16K, NOT the 0.22 / 32K this recipe used to carry.
+  # Sized 2026-07-29 to coexist with the 27B DFlash coder (gmu 0.61) plus
+  # clone-voice (~9 GiB) on spark-01. At 0.22 the launch HARD-FAILS at
+  # startup ("Free memory on device (19.15/121.69 GiB) is less than desired
+  # GPU memory utilization (0.17, 20.69 GiB)") — vLLM checks CUDA-visible
+  # free memory, which runs ~7 GiB BELOW what `free -h` reports on GB10
+  # unified memory. Don't size this from `free -h`.
+  # Gives ~18.7K KV tokens = 1.14x at 16K; plenty for single-image turns.
+  gpu_memory_utilization: 0.14
+  max_model_len: 16384
   max_num_batched_tokens: 16384
   max_num_seqs: 24
 

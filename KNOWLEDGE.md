@@ -442,6 +442,17 @@ don't need to know which quant. To add multiple aliases:
   AND the upstream PR has matured AND someone has reported Blackwell
   + aarch64 success.
 
+- **Qwen3-VL-8B needs more input resolution + prompt work than the
+  Qwen3.6 generation (2026-07-29).** Running the 8B as the spark-01
+  vision slot (in place of a Qwen3.6-class model, which no longer fits
+  beside the 262K coder) worked, but only after **increasing the DPI of
+  the images passed in** and **tweaking the prompts**. Head-to-head the
+  newer Qwen3.6 model was clearly superior on the same task. So the 8B
+  is a capacity-driven compromise, not a quality-neutral swap: budget
+  for higher-resolution inputs and per-task prompt tuning, and prefer a
+  Qwen3.6-class VLM (or `Qwen3-VL-30B-A3B`) whenever memory allows —
+  e.g. once spark-02 is free to host it.
+
 - **Qwen3.6-35B-A3B is not a coding model.** Tested 2026-05-16 across
   both Intel/Qwen3.6-35B-A3B-int4-mixed-AutoRound and the official
   Qwen/Qwen3.6-35B-A3B-FP8, with Qwen-recommended sampling enforced
@@ -615,6 +626,34 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   empirically per workload before committing. The current default for
   coding is MTP + AWQ-INT4 (~21 t/s) for that reason — the speed
   trade-off is intentional.
+  **SUPERSEDED for the current draft head (2026-07-29):** the
+  prose-bias above was real for the *original* z-lab draft model. The
+  **May 2026 z-lab re-release remedied it**, and measurement on
+  `Qwen/Qwen3.6-27B-FP8` + `z-lab/Qwen3.6-27B-DFlash` (vLLM 0.26.1,
+  PR #47914, spark-01, idle box, per-request metric deltas) now shows
+  the bias **inverted** — structured content is the *favourable*
+  regime:
+
+  | content | acceptance | decode t/s |
+  |---|---|---|
+  | JSON / tool-call shaped | 46-67% | 26-38 |
+  | code | 36-37% | ~26.5 |
+  | prose | 14-33% | 11-14 |
+
+  So for agentic coding the current DFlash head sits **above** the
+  ~25-30% MTP break-even, not below it. Keep the old caveat in mind
+  only when running a pre-May draft checkpoint.
+
+  **Corollary — `enable_thinking: false` is a double win with DFlash.**
+  Thinking output is prose-shaped, i.e. the *slow* regime, and there
+  is a lot of it. Turning it off both removes those tokens and keeps
+  decode in the fast regime. (Note the common misconception: thinking
+  does not lower t/s — every token costs the same — it inflates the
+  token *count*, which is why it dominates felt latency.)
+
+  **Caveat on all DFlash t/s figures: variance is large.** Six idle
+  back-to-back runs spanned 10.9-38.3 t/s purely on content shape.
+  Any single measurement misleads; MTP is far steadier (±0.7).
   **Practical-vs-benchmark gap (empirical, 2026-05-07):** on real
   interactive agentic work (planning + coding via pi coder), MTP felt
   *vastly* superior to DFlash despite DFlash's ~70% benchmark decode
@@ -640,7 +679,9 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   the draft head was well-aligned with the content distribution land
   in the high-accept regime (60-80%); workloads with code, JSON,
   tool calls, structured output land in the low-accept regime
-  (15-25%). Synthetic benchmarks (`llama-benchy --pp 512 --tg 256`)
+  (15-25%). **(Pre-May-2026 draft head only — see the SUPERSEDED
+  note above: on the current head this mapping is reversed, with
+  code/JSON in the high-accept regime and prose in the low.)** Synthetic benchmarks (`llama-benchy --pp 512 --tg 256`)
   produce predictable token sequences that hit the draft head's
   training distribution; real coding/agentic content rarely does.
 
@@ -1069,13 +1110,31 @@ retired AWQ-INT4 35B on the wrong port). Consolidated 2026-06-28.
 spark-01, not in this repo). It defines the whole layout and is safe to run
 by hand or at boot:
 
+**Layout REVISED 2026-07-29** (previous TP=2-based layout below it):
+
 | host:port | model | how |
 |---|---|---|
-| spark-01:3042 | 27B-FP8 **TP=2** (API server on head=spark-01, worker on spark-02), text-only | recipe `qwen3.6-27b-fp8-mtp-vlm` + `--language-model-only`, ray, gmu 0.30/node |
-| spark-01:3040 | 35B-A3B-FP8 **MTP-OFF**, 128k | recipe `qwen3.6-35b-a3b-fp8-nomtp` `--solo`, gmu 0.40 |
+| spark-01:3042 | 27B-FP8 + **DFlash**, **solo** (not TP=2), 262K, text-only | recipe `qwen3.6-27b-fp8-dflash` `--solo`, gmu 0.61, image `vllm-node-tf5-v0728` |
+| spark-01:3041 | Qwen3-VL-8B-Instruct-FP8 vision slot, 16K | recipe `qwen3-vl-8b-fp8` `--solo`, gmu 0.14 |
 | spark-02:3043 | 4B-Instruct-2507-FP8 utility, 2048 | recipe `qwen3-4b-instruct-2507-fp8` `--solo` (launched over ssh) |
 
-All on the 0.23 image `vllm-node-tf5-v0231`, **prefix-caching OFF** (§3).
+Why it changed: solo DFlash now **beats the old two-node TP=2** on decode
+(~26.5 t/s on code vs 20.3) — see §5. TP=2 still wins prefill (1476 vs
+~1050 t/s), so revisit if prefill latency becomes the complaint. The 35B
+is **no longer started at boot**: spark-01 cannot seat it alongside the
+262K coder + VL-8B + clone-voice (needs ~40 GiB, ~15 GiB spare). Run it on
+spark-02 by hand if wanted.
+
+**Sizing/image/port now live in the RECIPES, not in `start-cluster.sh`** —
+the script passes no `--gpu-mem/--max-model-len/-t` for the spark-01
+models, so the two cannot drift apart again (that drift is exactly what
+broke the 2026-06 recovery). `clone-voice` (:3030) is NOT in the script:
+it's a plain container with `--restart unless-stopped`.
+
+**Previous layout (pre-2026-07-29, for reference):** :3042 27B-FP8 TP=2
+across both Sparks (`qwen3.6-27b-fp8-mtp-vlm`, ray, gmu 0.30/node);
+:3040 35B-A3B-FP8 MTP-OFF 128k (gmu 0.40). All on the 0.23 image
+`vllm-node-tf5-v0231`, **prefix-caching OFF** (§3).
 The script is **idempotent** — each step skips if its port already serves —
 so re-runs are harmless. It waits for spark-02 to be ssh-reachable before
 the TP=2 and 4B steps (both depend on spark-02).
@@ -1096,6 +1155,27 @@ launched from spark-01 over ssh.
 **To change the layout, edit in one place** — the relevant recipe (in this
 repo) and/or the matching block in `start-cluster.sh`. Do not reintroduce
 per-model systemd units.
+
+**Launching by hand: `run-recipe.py` DIES WITH ITS SHELL SESSION.** It
+stays in the foreground streaming logs and traps SIGTERM to stop its
+container ("Stopping cluster... Cluster stopped"). So launching it as a
+plain background job of an interactive/agent session means **the model is
+torn down when that session exits** — this silently killed both spark-01
+endpoints on 2026-07-29. Use one of:
+- `./run-recipe.py <recipe> --solo --name <n> -d`  (daemon mode; what
+  `start-cluster.sh` uses)
+- `setsid nohup ./run-recipe.py ... > log 2>&1 < /dev/null &`
+Verify detachment with `ps -o ppid=,sid= <pid>` — want **ppid 1** and
+sid == pid. `clone-voice` is immune (plain `--restart unless-stopped`).
+
+**Fabric fallback at boot (added 2026-07-29).** `.env` pins
+`LOCAL_IP`/`ETH_IF` to the CX7 point-to-point link. If spark-02 is down
+that interface has no carrier and **even `--solo` launches hang in Gloo**
+("Unable to find address for: enp1s0f1np1") — `.env` feeds `VLLM_HOST_IP`,
+so a recipe-level env override does NOT save you. `start-cluster.sh` now
+swaps `.env` to `LOCAL_IP=127.0.0.1 / ETH_IF=lo` when spark-02 never
+appears, and restores it via an EXIT trap. Same manual workaround applies
+when launching by hand on a lone Spark.
 
 **Hardened 2026-07-06** after a real dual-node power-loss boot exposed two
 launch bugs (the systemd→start-cluster chain itself fired correctly):
