@@ -453,6 +453,11 @@ don't need to know which quant. To add multiple aliases:
   substantive; reach for the 35B only when latency matters more than
   quality, or for vision/video (the 27B is served text-only with
   `--language-model-only`, and DFlash's drafter is text-only anyway).**
+  Caveat on "slower": this was observed with **thinking ON** (the
+  hikyaku routes were not clamped `enable_thinking: false` until later
+  on 2026-07-29). Thinking was inflating the token count per turn by a
+  large factor, so the 27B's real latency penalty is smaller than it
+  appeared. The quality verdict is unaffected.
 
 - **Qwen3-VL-8B needs more input resolution + prompt work than the
   Qwen3.6 generation (2026-07-29).** Running the 8B as the spark-01
@@ -641,11 +646,16 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   **REAL-WORKLOAD DFlash acceptance, measured 2026-07-29** on
   `Qwen/Qwen3.6-27B-FP8` + `z-lab/Qwen3.6-27B-DFlash` (May-2026 draft
   head, vLLM 0.26.1 + PR #47914, `num_speculative_tokens: 15`,
-  spark-01 solo, 262K, `enable_thinking:false`). Both readings are
-  **passive `/metrics` counter deltas over the user's own traffic** —
-  no synthetic load added:
+  spark-01 solo, 262K). Both readings are **passive `/metrics` counter
+  deltas over the user's own traffic** — no synthetic load added.
+  **IMPORTANT: both were taken with THINKING ON** — the hikyaku routes
+  were only clamped to `enable_thinking: false` later on 2026-07-29,
+  after these numbers were captured. Treat them as *thinking-on*
+  baselines; thinking output is prose-shaped, which is this drafter's
+  weak regime (see the old prose/code note above), so thinking-off
+  acceptance should be **higher**. Not yet re-measured:
 
-  | workload | acceptance | accepted/step | notes |
+  | workload (THINKING ON) | acceptance | accepted/step | notes |
   |---|---|---|---|
   | **coding** (openclaw) | **33.3%** | 5.00 | just above the MTP break-even |
   | **agentic editing** (documents, writing scripts) | **16.9%** | 2.53 | **below** break-even → MTP likely better |
@@ -674,10 +684,32 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   this section reported those synthetic numbers as if they overturned
   the prose-bias claim above — they did not.)
 
-  **Corollary — `enable_thinking: false` is still worth it**, but for
-  token count, not rate: thinking inflates the number of tokens
-  generated (it does not lower t/s — every token costs the same),
-  which is what dominates felt latency.
+  **Corollary — `enable_thinking: false` is worth a LOT**, but for
+  token count, not rate: thinking does not lower t/s (every token
+  costs the same), it inflates the number of tokens generated, which
+  is what dominates felt latency. Measured on 27B-FP8, prompt "What is
+  2+2? Answer with just the number.":
+
+  | request | completion tokens |
+  |---|---|
+  | `chat_template_kwargs: {enable_thinking: false}` | **2** |
+  | no kwargs (model default = thinking ON) | **146** |
+  | **top-level** `enable_thinking: false` — SILENTLY IGNORED | **170** |
+
+  **The trap: `enable_thinking` must go inside `chat_template_kwargs`.**
+  Passed as a top-level request field it is accepted and ignored, so
+  thinking stays on and nothing warns you. Verified that hikyaku's
+  per-route `clamp: enable_thinking: false` DOES translate correctly
+  (matches the 2-token result). Also note `thinking_token_budget` is
+  **rejected outright by the V2 model runner** the v0728 image uses, so
+  routes must not send it.
+
+  **This invalidated a round of measurements (2026-07-29):** the two
+  acceptance figures above, and the "27B takes a lot longer" note in
+  §4, were all captured while thinking was unknowingly ON. Before
+  trusting any DFlash-vs-MTP or latency comparison, confirm thinking
+  state first — check `usage.completion_tokens` on a trivial prompt
+  (expect ~2, not ~150).
   **Practical-vs-benchmark gap (empirical, 2026-05-07):** on real
   interactive agentic work (planning + coding via pi coder), MTP felt
   *vastly* superior to DFlash despite DFlash's ~70% benchmark decode
