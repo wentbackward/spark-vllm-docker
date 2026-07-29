@@ -442,6 +442,18 @@ don't need to know which quant. To add multiple aliases:
   AND the upstream PR has matured AND someone has reported Blackwell
   + aarch64 success.
 
+- **27B-FP8 does far superior work to 35B-A3B — it is just slower
+  (2026-07-29).** Observed across sustained real use (openclaw coding
+  *and* agentic editing: documents, writing scripts). This is the
+  dense-vs-MoE trade in practice: the 35B-A3B activates ~3B params so
+  it is fast, but the dense 27B's output quality is not close. Read it
+  together with the §5 "tokens/s ≠ productivity" note — the 27B's
+  lower t/s is bought back in fewer failed tool calls, less rework and
+  less circular reasoning. **Default to the 27B for anything
+  substantive; reach for the 35B only when latency matters more than
+  quality, or for vision/video (the 27B is served text-only with
+  `--language-model-only`, and DFlash's drafter is text-only anyway).**
+
 - **Qwen3-VL-8B needs more input resolution + prompt work than the
   Qwen3.6 generation (2026-07-29).** Running the 8B as the spark-01
   vision slot (in place of a Qwen3.6-class model, which no longer fits
@@ -626,34 +638,46 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   empirically per workload before committing. The current default for
   coding is MTP + AWQ-INT4 (~21 t/s) for that reason — the speed
   trade-off is intentional.
-  **SUPERSEDED for the current draft head (2026-07-29):** the
-  prose-bias above was real for the *original* z-lab draft model. The
-  **May 2026 z-lab re-release remedied it**, and measurement on
-  `Qwen/Qwen3.6-27B-FP8` + `z-lab/Qwen3.6-27B-DFlash` (vLLM 0.26.1,
-  PR #47914, spark-01, idle box, per-request metric deltas) now shows
-  the bias **inverted** — structured content is the *favourable*
-  regime:
+  **REAL-WORKLOAD DFlash acceptance, measured 2026-07-29** on
+  `Qwen/Qwen3.6-27B-FP8` + `z-lab/Qwen3.6-27B-DFlash` (May-2026 draft
+  head, vLLM 0.26.1 + PR #47914, `num_speculative_tokens: 15`,
+  spark-01 solo, 262K, `enable_thinking:false`). Both readings are
+  **passive `/metrics` counter deltas over the user's own traffic** —
+  no synthetic load added:
 
-  | content | acceptance | decode t/s |
-  |---|---|---|
-  | JSON / tool-call shaped | 46-67% | 26-38 |
-  | code | 36-37% | ~26.5 |
-  | prose | 14-33% | 11-14 |
+  | workload | acceptance | accepted/step | notes |
+  |---|---|---|---|
+  | **coding** (openclaw) | **33.3%** | 5.00 | just above the MTP break-even |
+  | **agentic editing** (documents, writing scripts) | **16.9%** | 2.53 | **below** break-even → MTP likely better |
 
-  So for agentic coding the current DFlash head sits **above** the
-  ~25-30% MTP break-even, not below it. Keep the old caveat in mind
-  only when running a pre-May draft checkpoint.
+  Agentic-editing profile for context: 122 requests, **35,752 prompt
+  tok/req → 578 output tok/req (62:1)**, mean TTFT 8.4 s, mean e2e
+  38.0 s, prefix-cache hit rate 77.7%, implied decode **~19.5 t/s**.
+  Note that is only *parity* with the old two-node TP=2 + MTP (20.3
+  t/s) — DFlash on one node matched two nodes, it did not beat them.
+  Per-position decay was steep: 74.5% accepted at pos 0, 1.5% by pos
+  13, i.e. drafting 15 to land ~2.5.
 
-  **Corollary — `enable_thinking: false` is a double win with DFlash.**
-  Thinking output is prose-shaped, i.e. the *slow* regime, and there
-  is a lot of it. Turning it off both removes those tokens and keeps
-  decode in the fast regime. (Note the common misconception: thinking
-  does not lower t/s — every token costs the same — it inflates the
-  token *count*, which is why it dominates felt latency.)
+  **Workload shape moves acceptance by ~2x, so record which workload a
+  number came from.** At 16.9% the economics favour MTP: DFlash 3.53
+  tok/step ÷ 1.5x step cost = **2.35** tok per unit cost, vs MTP
+  num_spec=2's **2.85** — and §5 records 27B-FP8 + MTP sustaining
+  ~83% (peaking >90%) as session depth grows, the opposite of
+  DFlash's behaviour here. Untested A/B as of 2026-07-29.
 
-  **Caveat on all DFlash t/s figures: variance is large.** Six idle
-  back-to-back runs spanned 10.9-38.3 t/s purely on content shape.
-  Any single measurement misleads; MTP is far steadier (±0.7).
+  **DO NOT benchmark this with synthetic prompts — they overstate
+  DFlash badly.** Toy code/JSON/prose snippets on an idle box gave
+  36-67% acceptance and 26-38 t/s, i.e. 2-4x the real-traffic figures
+  above, and inverted the content ranking. Short prompts miss the
+  long-context degradation that dominates real sessions. Use passive
+  `/metrics` deltas over real traffic instead. (An earlier revision of
+  this section reported those synthetic numbers as if they overturned
+  the prose-bias claim above — they did not.)
+
+  **Corollary — `enable_thinking: false` is still worth it**, but for
+  token count, not rate: thinking inflates the number of tokens
+  generated (it does not lower t/s — every token costs the same),
+  which is what dominates felt latency.
   **Practical-vs-benchmark gap (empirical, 2026-05-07):** on real
   interactive agentic work (planning + coding via pi coder), MTP felt
   *vastly* superior to DFlash despite DFlash's ~70% benchmark decode
@@ -679,9 +703,10 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   the draft head was well-aligned with the content distribution land
   in the high-accept regime (60-80%); workloads with code, JSON,
   tool calls, structured output land in the low-accept regime
-  (15-25%). **(Pre-May-2026 draft head only — see the SUPERSEDED
-  note above: on the current head this mapping is reversed, with
-  code/JSON in the high-accept regime and prose in the low.)** Synthetic benchmarks (`llama-benchy --pp 512 --tg 256`)
+  (15-25%). **(Still broadly right on real traffic with the May-2026
+  draft head: measured 16.9% on agentic editing and 33.3% on coding —
+  see the real-workload table above. Synthetic snippets suggest much
+  higher numbers; don't trust them.)** Synthetic benchmarks (`llama-benchy --pp 512 --tg 256`)
   produce predictable token sequences that hit the draft head's
   training distribution; real coding/agentic content rarely does.
 
