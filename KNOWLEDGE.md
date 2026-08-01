@@ -119,6 +119,74 @@ IB_IF=rocep1s0f1
 (`rocep1s0f1` is the RoCE device matching `enp1s0f1np1` — confirm with
 `ibdev2netdev`.)
 
+### THE CX7 CABLE MUST BE CONNECTED **BEFORE BOOT** (2026-08-01)
+
+**If a Spark boots with no carrier on the CX7 and the cable is plugged in
+afterwards, its RDMA TRANSMIT path is permanently degraded to ~13 Gb/s
+until reboot.** Receive is unaffected. Nothing anywhere reports an error.
+
+Measured on spark-01 (booted with spark-02 down, cable plugged in later):
+
+| condition | spark-01 → spark-02 | spark-02 → spark-01 |
+|---|---|---|
+| cable hot-plugged after boot | **13.3 Gb/s** | 97.98 |
+| after reboot with link live, MTU 1024 | 92.51 | — |
+| after reboot with link live + jumbo | **97.98** | **97.98** |
+
+**The one diagnostic that finds this fast: TEST BOTH DIRECTIONS.** The
+asymmetry (full rate inbound, 7x slow outbound) is the signature and points
+straight at the sending host. A single-direction test looks like a fabric
+fault and sends you hunting the wrong things.
+
+Everything below was checked and was NOT the cause — do not re-chase them:
+cabling, switch config, bridge hardware offload, MTU/jumbo, FEC, PCIe link
+width/speed, MPS/MRRS, NIC QoS/ETS/rate-limits, IOMMU, and packet loss
+(every NIC and switch error counter read zero throughout). Also ruled out:
+vLLM memory occupancy — 92.51 Gb/s with 88 GiB resident vs 90.52 with an
+empty box, i.e. **models resident do not slow RDMA**, which is good news
+for TP=2.
+
+Mechanism (inferred): the mlx5 driver initialises against a dead port and
+never fully recovers the transmit path on later link-up. DMA writes
+(receive) are posted and stay fast; DMA reads (transmit) are non-posted and
+latency-sensitive, which is why only one direction degrades.
+
+**Operational consequence:** power-on order matters. Switch and cabling
+must be live before the Sparks boot. If a Spark did come up first, a reboot
+is the fix — and note `start-cluster.sh`'s loopback fallback (§11) exists
+precisely because a Spark *can* boot with a dead fabric, so that path and
+this trap go together.
+
+### Switched fabric (CRS504-4XQ-IN) — costs essentially nothing (2026-08-01)
+
+Replacing the direct DAC with a MikroTik CRS504-4XQ-IN gives **97.98 Gb/s
+symmetric**, versus the 99.9 Gb/s direct-cable baseline. Wire rate drops
+200 → 100 Gb/s (the CRS504 is a 100G switch) but that was never the limit —
+PCIe Gen5 x4 was. Config that matters:
+
+- Switch: `/interface/ethernet/set [find name~"qsfp"] l2mtu=9216`. A bridge
+  clamps to the **lowest** member `l2mtu`, so missing a member silently
+  defeats jumbo. Persisted; survives reboot.
+- Hosts: `mtu: 9000` in `/etc/netplan/40-cx7.yaml` on BOTH netdevs of the
+  cabled port (they are the same physical port — keep them in sync).
+  Yields RDMA `active_mtu` 4096. Worth ~6% (92.51 → 97.98), no more.
+- Management: switch is `192.168.88.1`. Without a directly-connected
+  address in that subnet the route goes out the LAN default gateway and
+  reaches the **CRS310** instead (both switches ship on 192.168.88.1).
+  Netplan now pins `192.168.88.100` (spark-01) / `.101` (spark-02) on
+  `enp1s0f1np1`, so both nodes can reach the CRS504 over the fibre.
+
+**Switch-management trap:** with the RJ45 unplugged, the switch's ONLY
+management path is the QSFP ports. Changing `l2mtu` on all of them at once
+cut the CPU path and froze the session (data plane kept forwarding —
+hardware offload does not need the CPU). Recovery: MNDP (`sudo mactelnet -l`)
+still showed the switch, proving the CPU was alive, and the **second PCIe
+domain's address on a different switch port still reached it**. Always run
+RouterOS **safe mode (`Ctrl+X`)** before touching port config — it
+auto-reverts on session drop, and did. Note `mactelnet` 0.4.4 (Ubuntu) cannot
+authenticate to RouterOS ≥ 6.43 — it reports "incorrect username or
+password" regardless of the real password; use SSH/WebFig by IP instead.
+
 ### CX7 bandwidth: PCIe Gen5 x4 per rail (~100 Gb/s), 200 nominal
 
 Measured 2026-06-28 with RDMA `ib_write_bw` over RoCEv2 (after a "why is it
@@ -142,6 +210,15 @@ slow / why doesn't nv-monitor show traffic" investigation — the slowness was
   moves KB-scale tensors; measured ~49 MB/s = <0.5% of one rail. So the
   fabric is never the inference bottleneck — GPU memory bandwidth
   (273 GB/s, §6) is. More network would not speed up decode at all.
+- **CORRECTION (2026-08-01): there are NOT two rails — it is ONE physical
+  port seen twice.** `enp1s0f1np1` (PCIe domain 0000) and `enP2p1s0f1np1`
+  (domain 0002) report **identical `phys_switch_id` and identical
+  `phys_port_name=p1`** — same physical QSFP port, two PCIe functions with
+  different MACs. That is why both show `carrier=1` with only ONE cable
+  plugged in. So the NVIDIA playbook's four addresses map to two physical
+  ports (p0, p1), not four, and only p1 is cabled. This invalidates the
+  "aggregate both rails for 200 Gb/s" idea below as written: you cannot
+  aggregate a port with itself. ~100 Gb/s IS the ceiling for one cable.
 - **Reaching the quoted 200 Gb/s / 25 GB/s "unit-wide lane limit" needs both
   x4 rails aggregated.** UNCONFIRMED here: a simultaneous 2-rail
   `ib_write_bw` summed to only ~107 Gb/s, but that test is contaminated —
