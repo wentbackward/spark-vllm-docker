@@ -8,6 +8,45 @@
 # Risk: official FP8 ships without MTP heads → startup error like
 # "missing MTP weights". Fall back: drop --speculative-config block.
 
+# RETEST CONFIG (2026-08-02). Purpose: find out whether the 35B's notorious
+# long-context looping was caused by UNCALIBRATED fp8 KV rather than by the
+# model or by MTP. Changes from the previous version of this recipe:
+#   --kv-cache-dtype fp8 -> auto  (16-bit; the real change under test)
+#   max_model_len 262144 -> 131072
+#   preserve_thinking true -> false
+#   gpu_memory_utilization 0.43 -> 0.50 (see sizing note below)
+#   + HF_HUB_OFFLINE (was missing here; its absence broke a cold boot once)
+#
+# WHY fp8 KV IS THE SUSPECT: this FP8 checkpoint ships no attention scaling
+# factors, so `--kv-cache-dtype fp8` runs with uncalibrated q_scale /
+# prob_scale of 1.0 and vLLM warns "may cause accuracy issues". Degraded
+# attention numerics that compound with context length is a plausible
+# mechanism for loops that only appear deep into a session. Supporting
+# evidence: the 27B DFlash coder ran bf16 KV (flash_attn rejects fp8) and
+# never showed this failure. STILL UNVERIFIED — that is what this tests.
+#
+# CAUTION ON ATTRIBUTION: the loops were previously seen on the *noMTP*
+# recipe (which also had fp8 KV). This recipe changes TWO things at once
+# versus that config — it removes fp8 KV *and* adds MTP=2. If looping
+# returns, you cannot tell which is responsible. For a clean read, test
+# qwen3.6-35b-a3b-fp8-nomtp (now also 16-bit KV) FIRST.
+#
+# MYTH CORRECTED: the sibling noMTP recipe warns "official FP8 ships
+# without MTP heads". Not true for this checkpoint — its safetensors index
+# contains 1560 MTP tensors (mtp.fc.weight, mtp.layers.0.*). MTP works.
+# Note those MTP layers are themselves MoE (256 experts), so enabling MTP
+# costs meaningfully more weight memory than the noMTP recipe.
+#
+# SIZING (gmu 0.50): the noMTP recipe got ~298K KV tokens at gmu 0.43 with
+# fp8 KV. Going 16-bit halves tokens-per-byte while halving max_model_len
+# halves what one sequence needs, so those roughly cancel — but the MoE MTP
+# module adds weight memory the old figure didn't include, hence the bump.
+# This is an ESTIMATE. If startup fails with "estimated maximum model
+# length ... is smaller than max_model_len", raise gmu or drop context.
+# Placement: needs ~55-60 GiB free. spark-01 currently has ~67 GiB spare,
+# spark-02 ~55 GiB (it also hosts the 4B), so prefer spark-01 unless you
+# stop the 4B first.
+
 recipe_version: "1"
 name: Qwen36-35B-A3B-FP8-MTP
 description: vLLM serving Qwen3.6-35B-A3B-FP8 with native MTP, multimodal enabled
@@ -38,8 +77,8 @@ defaults:
   # would NOT start there (vLLM refuses when KV can't hold one full
   # sequence). If you drop gmu, drop max_model_len to match; if the VL
   # is removed, gmu can go to ~0.5 for more KV/concurrency.
-  gpu_memory_utilization: 0.43
-  max_model_len: 262144
+  gpu_memory_utilization: 0.50
+  max_model_len: 131072
   max_num_batched_tokens: 16384
   # 4 concurrent slots is plenty for serial agentic flows. Multiple
   # virtual-model routes (thinker, instruct, etc.) share these slots
@@ -49,6 +88,10 @@ defaults:
 
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  # Cached locally; force offline so a cold boot with no internet yet
+  # doesn't crash on an HF metadata fetch (caused the 2026-06-28 boot
+  # failure on :3040).
+  HF_HUB_OFFLINE: 1
   # Pin the CuTe/CUTLASS DSL to this GPU's compute capability (SM121a).
   # Harmless to keep; used by tilelang/CUTLASS code paths (e.g. FlashQLA).
   CUTE_DSL_ARCH: sm_121a
@@ -95,12 +138,12 @@ command: |
     --enable-auto-tool-choice \
     --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
-    --kv-cache-dtype fp8 \
+    --kv-cache-dtype auto \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
     --no-enable-prefix-caching \
     --enable-chunked-prefill \
     --chat-template qwen3.6.jinja \
-    --default-chat-template-kwargs '{{"preserve_thinking": true}}' \
+    --default-chat-template-kwargs '{{"preserve_thinking": false}}' \
     --speculative-config '{{"method":"qwen3_next_mtp","num_speculative_tokens":2}}' \
     -tp {tensor_parallel}

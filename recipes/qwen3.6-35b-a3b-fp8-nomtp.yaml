@@ -5,7 +5,12 @@
 # window (vs 131K default) keeps KV-cache memory headroom comfortable while
 # still being plenty for short interactive turns.
 #
-# Risk: official FP8 ships without MTP heads → startup error like
+# NOTE (corrected 2026-08-02): the old warning here — "official FP8 ships
+# without MTP heads → startup error" — is WRONG for this checkpoint. Its
+# safetensors index contains 1560 MTP tensors (mtp.fc.weight,
+# mtp.layers.0.*), so MTP loads fine; see qwen3.6-35b-a3b-fp8-mtp.yaml.
+# This recipe stays MTP-off deliberately (KNOWLEDGE §5), not because the
+# heads are absent.
 
 # KV CACHE: 16-bit (auto). Was `fp8` until 2026-08-02 — CHANGED, and this
 # is a prime suspect for this model's notorious long-context looping.
