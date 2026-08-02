@@ -7,6 +7,21 @@
 #
 # Risk: official FP8 ships without MTP heads → startup error like
 
+# KV CACHE: 16-bit (auto). Was `fp8` until 2026-08-02 — CHANGED, and this
+# is a prime suspect for this model's notorious long-context looping.
+#   On GB10 the correct KV-cache setting is `auto` / 16-bit. The FP8
+#   checkpoint ships NO attention scaling factors, so `--kv-cache-dtype fp8`
+#   makes vLLM fall back to UNCALIBRATED q_scale/prob_scale of 1.0 and warn
+#   "This may cause accuracy issues". Degraded attention numerics that
+#   worsen as context grows is a plausible mechanism for the loops seen
+#   here — and note the 27B DFlash coder, which ran bf16 KV (flash_attn
+#   rejects fp8), did NOT show the same failure.
+#   Cost is memory, not much: measured on the 27B, dropping fp8 shrank the
+#   KV pool ~27% (not 50%) because Qwen3.6 uses a HYBRID attention layout.
+#   Expect similar here; raise gpu_memory_utilization if KV is short.
+#   UNVERIFIED as the cause of the looping — re-test the 35B before
+#   trusting it. See KNOWLEDGE §5.
+
 recipe_version: "1"
 name: Qwen36-35B-A3B-FP8-noMTP
 description: vLLM serving Qwen3.6-35B-A3B-FP8 with native MTP, multimodal enabled
@@ -99,7 +114,7 @@ command: |
     --enable-auto-tool-choice \
     --reasoning-parser qwen3 \
     --tool-call-parser qwen3_coder \
-    --kv-cache-dtype fp8 \
+    --kv-cache-dtype auto \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
     --no-enable-prefix-caching \
