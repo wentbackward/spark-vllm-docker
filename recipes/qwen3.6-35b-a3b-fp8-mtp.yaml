@@ -79,12 +79,29 @@ defaults:
   # is removed, gmu can go to ~0.5 for more KV/concurrency.
   gpu_memory_utilization: 0.50
   max_model_len: 131072
+  # 16384. TESTED AND REVERTED from 32768 (2026-08-03). Hypothesis was that
+  # 8 concurrent receipts (~3,089 prompt tok each = ~24,700) exceeded a
+  # 16384 budget and were being chunked. WRONG: at 32768 mean prefill went
+  # 3.61s -> 3.77s and wall clock 76s -> 77s, i.e. no change, while the KV
+  # pool HALVED (65,392 -> 35,376 tokens, 1.85x -> 1.01x concurrency)
+  # because vLLM sizes activation buffers from this value. Not a free knob.
+  # Prefill here is compute-limited, not batching-limited.
   max_num_batched_tokens: 16384
   # 4 concurrent slots is plenty for serial agentic flows. Multiple
   # virtual-model routes (thinker, instruct, etc.) share these slots
   # rather than each spawning a separate 35B instance — see hikyaku
   # config patterns like gresh-coder vs gresh-coder-moe.
-  max_num_seqs: 4
+  # 16. Raised 4 -> 8 -> 16 while tuning a 51-receipt OCR batch (2026-08-03).
+  # A client-side concurrency sweep at max_num_seqs=8 showed throughput DOES
+  # scale with concurrency, contrary to an earlier (wrong) "saturated at 4"
+  # reading:  n=4 86s | n=6 79s | n=8 67s | n=12 68s.
+  # The flat spot at n=8-12 was the max_num_seqs=8 cap itself, not hardware,
+  # so this is raised to 16 to find the real ceiling. Slots are a scheduler
+  # limit and do NOT consume activation buffers (unlike
+  # max_num_batched_tokens), so this should not cost KV.
+  # KV check: ~75k tokens / ~3,089 per receipt = ~24 receipts' worth, so 16
+  # concurrent fits. Re-check this ratio if request size changes.
+  max_num_seqs: 16
 
 env:
   VLLM_MARLIN_USE_ATOMIC_ADD: 1
@@ -116,7 +133,34 @@ env:
   #     Triton MoE tuning sweep (see KNOWLEDGE §MoE tuning).
   # VLLM_USE_FLASHINFER_MOE_FP8: '1'   # ← confirmed broken on GB10, leave off
 
-# Prefix caching is DISABLED below (--no-enable-prefix-caching). It
+# PREFIX CACHING: ENABLED 2026-08-03, deliberately — but the MoE corruption
+# question below is STILL OPEN, not cleared. Read this before trusting it.
+#
+# WHAT WAS TESTED: 51-receipt OCR harness + reconciliation vs known-good,
+# swept n=4/8/12/16. Result: 51 OK / 0 WARN / 0 FAIL, identical category
+# counts at every level. BUT THAT PROVES NOTHING — the prefix cache logged
+# 785,216 queries and ZERO hits (0.0%). Each receipt is a unique image and
+# vLLM matches prefix blocks from the START of the sequence, so with the
+# image early in the prompt nothing ever matched. The cache never served a
+# block, so there was no opportunity for cross-request contamination.
+# (Do not be misled by a high cumulative hit rate on the 27B either — that
+# figure is dominated by long-lived coding conversations, not by the OCR
+# sweep.) A VALID test needs a long SHARED system prompt with the varying
+# content LAST, so the cache actually hits.
+#
+# COST ON THIS WORKLOAD: pure overhead. KV pool fell 66,464 -> 53,600
+# tokens and every concurrency level got slower (n=4 81->114s, n=8 68->73s,
+# n=12 64->66s, n=16 62->72s) for zero cache hits.
+#
+# WHY IT IS LEFT ON ANYWAY: agentic/coding flows DO have long shared
+# prefixes (the dense 27B sustains ~69-76% hit rates on that traffic, worth
+# ~10x on prefill), which is the workload this instance also serves. If you
+# run a pure image-batch job here, turn it off for ~15% more throughput.
+# If output corruption ever appears under concurrency, this flag is the
+# first suspect — see the original rationale below.
+#
+# ORIGINAL RATIONALE (still applies unless this test clears it):
+# Prefix caching was DISABLED (--no-enable-prefix-caching). It
 # corrupts Qwen MoE output under concurrent shared-prefix load —
 # cross-request KV-state contamination (a vendor name landing in the
 # currency field, one receipt's data in another's output, token
@@ -141,7 +185,7 @@ command: |
     --kv-cache-dtype auto \
     --load-format fastsafetensors \
     --attention-backend flashinfer \
-    --no-enable-prefix-caching \
+    --enable-prefix-caching \
     --enable-chunked-prefill \
     --chat-template qwen3.6.jinja \
     --default-chat-template-kwargs '{{"preserve_thinking": false}}' \

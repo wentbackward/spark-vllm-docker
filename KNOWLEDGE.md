@@ -299,6 +299,34 @@ class of bug was the 0.20 quality regression above. This is a
 **recurring** vLLM-prefix-cache × Qwen-MoE failure — assume any new
 vLLM build is suspect until tested.
 
+**STATUS 2026-08-03: STILL OPEN. An attempt to re-test it was INVALID —
+learn from the mistake.** The 35B was run with `--enable-prefix-caching`
+against a 51-receipt OCR harness with reconciliation vs known-good,
+swept at n=4/8/12/16. Result looked perfect (51 OK / 0 WARN / 0 FAIL,
+identical categories at every level) — but the prefix cache logged
+**785,216 queries and ZERO hits (0.0%)**. The cache never served a
+block, so cross-request contamination had no opportunity to occur. A
+clean result under 0% hit rate is not evidence of anything.
+
+- **Why 0%:** every receipt is a unique image, and vLLM matches prefix
+  blocks from the **start of the sequence**. With the image early in the
+  prompt, nothing ever matches across requests.
+- **A VALID test needs a long SHARED prefix with the varying content
+  LAST** — e.g. a big fixed system prompt then a short differing query —
+  so the cache genuinely hits, then reconcile the outputs.
+- **Do not be fooled by a high cumulative hit rate on another endpoint.**
+  The dense 27B shows ~69-76%, but that is dominated by long-lived
+  coding conversations; its OCR portion was almost certainly ~0% too.
+  Always check the hit rate **for the workload under test**, not the
+  process lifetime figure.
+- **Dense models look unaffected** — the 27B has run prefix caching +
+  MTP continuously under real concurrent coding load with no reported
+  corruption. The documented bug is MoE-specific. Prefix caching and MTP
+  are **not** mutually exclusive.
+- **Cost when it does not hit:** pure overhead. On the OCR sweep the KV
+  pool fell 66,464 → 53,600 tokens and every concurrency level slowed
+  (n=4 81→114s, n=8 68→73s, n=12 64→66s, n=16 62→72s).
+
 **Confirmed by a clean single-variable A/B** (only `enable_prefix_caching`
 toggled, everything else identical — same image, gmu, MTP, DPI, N):
 - **OFF:** N=1, N=4, N=8 produce *byte-identical* output, matching the
@@ -750,7 +778,38 @@ single-Spark deployments at full memory budget (`--gpu-mem 0.7`):
   tok/step ÷ 1.5x step cost = **2.35** tok per unit cost, vs MTP
   num_spec=2's **2.85** — and §5 records 27B-FP8 + MTP sustaining
   ~83% (peaking >90%) as session depth grows, the opposite of
-  DFlash's behaviour here. Untested A/B as of 2026-07-29.
+  DFlash's behaviour here.
+
+  ### VERDICT: MTP BEATS DFLASH — A/B RESOLVED (2026-08-02)
+
+  The A/B was run. **MTP wins decisively on real traffic and DFlash has
+  been retired from the coder.**
+
+  | | DFlash (thinking off) | **MTP** |
+  |---|---|---|
+  | acceptance, real agentic/coding | 18.9% | **85.5%** (281 reqs) |
+  | acceptance, receipts OCR | — | **96.8-97.1%** |
+  | decode | 21.7 t/s | **28.2 t/s** |
+  | mean TTFT | 5.83s | **5.24s** |
+
+  Thinking-off did NOT rescue DFlash (16.9% → 18.9%), leaving it below
+  the ~25-30% break-even where its ~1.5x drafter overhead stops paying.
+  MTP's built-in heads are effectively free by comparison.
+
+  **MTP also unblocks vision.** DFlash's drafter is text-only and forces
+  `--language-model-only`; MTP does not. One endpoint can therefore serve
+  coding, agentic work AND vision/video — which is what allowed the
+  separate VL-8B to be retired entirely (§4).
+
+  **And it allows fp8 KV to be dropped.** DFlash needs non-causal
+  attention, so it required `flash_attn`, which rejects fp8 KV — a
+  constraint that disappears with MTP. Combined with TP=2 the 27B went
+  from 1.07x to 2.46x concurrency at the full 262K window.
+
+  Historical note: earlier synthetic benchmarks made DFlash look strong
+  (up to 36 t/s). Those used `llama-benchy`-style predictable token
+  sequences that suit a draft head; they do not predict real workloads.
+  Trust `/metrics` deltas over real traffic.
 
   **DO NOT benchmark this with synthetic prompts — they overstate
   DFlash badly.** Toy code/JSON/prose snippets on an idle box gave
@@ -1033,6 +1092,70 @@ Lessons from running multiple instances on one Spark:
 - **Distribution across both Sparks** keeps each node ~50-90 GiB used,
   no swap, predictable performance.
 
+### KV CACHE DTYPE: use `auto` / 16-bit on GB10, NEVER fp8 (2026-08-02/03)
+
+**`--kv-cache-dtype fp8` on these Qwen FP8 checkpoints runs with
+UNCALIBRATED attention scales and is a likely cause of long-context
+looping.** The checkpoints ship no attention scaling factors, so vLLM
+falls back to `q_scale`/`prob_scale` of 1.0 and logs *"Using uncalibrated
+q_scale ... This may cause accuracy issues"*.
+
+- **Evidence it mattered:** after switching the 27B coder to 16-bit KV it
+  handled complex agentic edits at **70.4% of a 262K context** without
+  looping — the failure mode that had plagued deep sessions. The 27B
+  DFlash config, which was forced to bf16 KV (flash_attn rejects fp8),
+  never showed the problem either. Both 27B and 35B recipes moved to
+  `auto` on 2026-08-02.
+- **The cost is far smaller than it looks: ~27%, not 50%.** Qwen3.6 uses
+  a HYBRID attention layout, so most layers hold little KV. Measured on
+  the 27B: KV pool 686,400 → 483,200 tokens, concurrency 9.59x → 7.05x.
+  Cheap insurance for correct attention numerics.
+- Zero `uncalibrated` warnings in the log is the check that it took.
+
+### Sizing rules that actually hold (2026-08-03)
+
+- **`gpu_memory_utilization` does NOT bound peak memory.** It reserves
+  weights + KV; **activation spikes come on top**, and image tokens +
+  long prompts + MoE expert routing make those spikes large. Two crashes
+  in one day came from sizing to idle headroom and then driving real
+  load through both models at once.
+- **vLLM profiles memory AFTER loading weights**, so the ~35 GiB of
+  safetensors it just read is sitting in page cache when it sizes KV.
+  Dropping caches beforehand helps only marginally (measured +10%,
+  65,392 → 71,824 tokens) because the load refills the cache itself.
+- **vLLM/CUDA sees `MemFree`, not `MemAvailable`.** Page cache therefore
+  *looks* like used memory to the startup check — e.g. 26G "available"
+  but only 19.15G visible to CUDA, causing a hard startup failure. Never
+  size a launch from `free -h`'s available column.
+- **KV sizing is NOT reproducible run-to-run.** Identical gmu gave
+  65,392 / 71,824 / 75,040 / 66,464 tokens on successive 35B launches
+  (~±9%). Do not tune off a single measurement, and re-read the actual
+  `Maximum concurrency` line after every launch.
+- **`max_num_batched_tokens` is NOT a free knob** — it sizes activation
+  buffers, so raising it takes memory from KV. On the 35B, 16384 → 32768
+  halved the KV pool (65,392 → 35,376 tokens, 1.85x → 1.01x) and did
+  **not** improve prefill (3.61s → 3.77s). Reverted.
+- **`max_num_seqs` IS nearly free** — a scheduler limit, not a memory
+  reservation. Raising it 4 → 8 → 16 cost no measurable KV.
+
+### Swap: turned OFF on both Sparks (2026-08-03)
+
+`vm.swappiness=1` plus **swap disabled entirely** (`swapoff -a`, fstab
+line commented, `systemctl mask swap.img.swap`). Rationale: a
+recoverable OOM-kill beats an unrecoverable hard hang.
+
+- **Swap did not prevent the crashes** — spark-01 died at 99% memory
+  having used only "the tiniest bit" of swap. Swappiness sets the
+  anon-vs-pagecache reclaim ratio; it does not create memory.
+- **Swapping vLLM is catastrophic anyway:** 1.3 GiB of engine memory
+  paged out **halved 27B decode, 28.2 → 12.4 t/s**, with no error
+  anywhere. `VmSwap` in `/proc/<pid>/status` is the tell.
+- **TRAP — `vm.swappiness` set via `tee -a`:** the documented setup step
+  appended to `/etc/sysctl.conf`, so re-running it left THREE conflicting
+  entries (`=1` at line 7, `=10` at 67 and 68). Last-wins, so every boot
+  came up at 10 despite the intended 1. Edit in place; verify with
+  `grep -c '^vm.swappiness' /etc/sysctl.conf` returning 1.
+
 ### NVRM unified-memory OOM hard-hangs the node — not thermal (2026-07-12)
 
 spark-01 "died" during heavy ComfyUI/Flux.2 rendering co-located with the
@@ -1051,6 +1174,26 @@ because the two have opposite fixes:
 - **Watch `free -h`, not temps**, when stacking Comfy/Flux.2 on vLLM. Keep
   total committed under ~110 GiB. Two concurrent Flux.2 pipelines on top of
   the 35B is the danger zone.
+
+**STILL PRESENT after the 2026-08-02 firmware upgrade.** Both Sparks were
+taken to EC `0x03000508` and UEFI/SoC `0x02009b0b` (from `0x03000302` /
+`0x0200980f`), plus kernel `6.17.0-1029-nvidia` and driver `580.173.02`,
+with a full cold power-cycle. **It did not fix the behaviour** — spark-01
+still died at 99% memory utilisation running 27B TP=2 + 35B + clone-voice
+under a receipts workload, and again needed a power-cycle. Do not assume
+newer firmware removes the need to size conservatively.
+
+- **Recovery is now remote:** smart plugs on both Sparks, the CRS504 and
+  limone. A hard hang costs a power-cycle, not a trip to the machine.
+- **POWER-ON ORDER MATTERS:** bring the **CRS504 up first and let it
+  finish training its ports (~60-90s) BEFORE the Sparks**. A Spark that
+  boots with a dead CX7 keeps a degraded RDMA transmit path (~13 Gb/s vs
+  ~98) with no error reported anywhere — see §2. `start-cluster.sh` now
+  logs a loud warning block if it sees no carrier at boot.
+- **Two models of this size do not co-exist on one node under load.**
+  27B TP=2 (~44 GiB) + 35B (~44 GiB) + clone-voice (9 GiB) + system left
+  ~11 GiB at idle, which real traffic consumed. The working layout is one
+  large model per node (see §11).
 
 **ComfyUI memory guards on the unified box (start-comfyui.sh):**
 
@@ -1091,6 +1234,61 @@ For multi-node TP=2 of a single model:
 ---
 
 ## 7. Benchmarking tools
+
+### Receipts OCR harness — the most useful benchmark we have (2026-08-03)
+
+A 51-receipt PDF→structured-extraction batch with **reconciliation against
+known-good results**, driven at configurable client concurrency. Unlike
+synthetic benchmarks it measures **quality and speed together** on a real
+workload, and it has already settled questions that pure timing could not.
+Prefer it for any config change that could affect output correctness.
+
+**Headline result — the MoE 35B beats the dense 27B on BOTH axes:**
+
+| model | best time (51 receipts) | per receipt | notes |
+|---|---|---|---|
+| **35B-A3B (MoE, 3B active)** | **62s** @ n=16 | 1.2s | also more accurate |
+| 27B (dense) | 242s @ n=8 | 4.7s | ~4x slower, slot-limited at n=16 |
+
+~4x is architectural: the dense 27B activates all 27B params per token
+while the 35B-A3B activates ~3B. **This holds even though the 35B needs
+more input resolution** (see DPI below), i.e. it wins while processing
+~2.25x more image tokens.
+
+**Accuracy:** the 35B correctly classified two domain-renewal receipts as
+`ai_software_cloud` where the 27B said `other` — adjudicated as better by
+reconciliation. Both scored 51 OK / 0 WARN / 0 FAIL.
+
+**Minimum DPI for accurate extraction** (an accuracy threshold, not a
+preference — below it, results degrade):
+
+| model | min DPI |
+|---|---|
+| 27B (dense) | **100-125** — most token-efficient |
+| 35B-A3B | 150 |
+| Qwen3-VL-8B (retired) | 150, some retries at 175 |
+
+Image tokens scale with DPI² so 100 → 150 is ~2.25x the tokens: the 27B
+fits far more receipts per context window, which matters for large batch
+reconciliation even though it is slower per receipt.
+
+**Concurrency sweep (35B, `max_num_seqs=16`):** n=4 81s | n=8 68s |
+n=12 64s | n=16 62s. Throughput scales to ~n=16 with diminishing returns
+(6% then 3%). **Watch for the server-side cap** — an earlier sweep
+plateaued at 68s purely because `max_num_seqs` was 8; the flat spot was
+configuration, not hardware. Confirm `mean queue time ≈ 0` in
+`/metrics` before concluding you have hit a physical limit.
+
+**MTP acceptance on OCR is exceptional: 96.8-97.1%** (35B, num_spec=2).
+Receipt output is highly predictable, so the draft heads land nearly every
+token — a large part of why the 35B is so fast here. Compare ~19% for
+DFlash on agentic coding (§5).
+
+**Steady-state ceiling:** ~62s / 51 receipts ≈ **2,540 prompt tok/s** on
+one Spark. More Sparks would give more parallel batches; only faster
+silicon shrinks a single batch.
+
+### Standard tools
 
 Both installed via `uv tool install` (the latter bundles the former):
 
@@ -1244,7 +1442,29 @@ retired AWQ-INT4 35B on the wrong port). Consolidated 2026-06-28.
 spark-01, not in this repo). It defines the whole layout and is safe to run
 by hand or at boot:
 
-**Layout REVISED 2026-07-29** (previous TP=2-based layout below it):
+**CURRENT RUNNING LAYOUT (2026-08-03)** — one large model per node, after
+two same-day crashes caused by co-locating both on spark-01:
+
+| host:port | model | role |
+|---|---|---|
+| spark-01:3042 (head) | 27B-FP8 + MTP=3, **TP=2 across both Sparks**, 262K, gmu 0.36, 16-bit KV, vision, prefix-caching ON | coding + agentic |
+| spark-02:3040 | 35B-A3B-FP8 + MTP=2, 131K, gmu 0.38, 16-bit KV, vision, `max_num_seqs` 16 | fast general / VLM / compaction |
+| spark-01:3030 | clone-voice | own restart policy, not in the script |
+| ~~spark-02:3043~~ | ~~4B utility~~ | **RETIRED** — the 35B replaced it, far more capable |
+
+**`start-cluster.sh` does NOT yet boot this layout** — it still launches
+the 4B and knows nothing about the 35B. Update it before relying on a
+reboot to restore service.
+
+**Firmware/OS baseline after the 2026-08-02 upgrade** (both nodes
+identical): kernel `6.17.0-1029-nvidia`, driver `580.173.02`, EC
+`0x03000508`, UEFI/SoC `0x02009b0b`, CX7 firmware `28.45.4028`
+(NOT changed by the upgrade), Ubuntu 24.04.4, docker 29.2.1. Verify with
+`fwupdmgr get-devices`; **EC updates require a full cold power-cycle**,
+not a warm reboot. Netplan (MTU 9000 + `192.168.88.100/.101` switch
+management) and `vm.swappiness=1` all survive reboots correctly.
+
+**Layout REVISED 2026-07-29** (superseded by the above):
 
 | host:port | model | how |
 |---|---|---|
