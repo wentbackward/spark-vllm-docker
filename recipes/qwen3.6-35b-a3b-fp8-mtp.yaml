@@ -77,7 +77,16 @@ defaults:
   # would NOT start there (vLLM refuses when KV can't hold one full
   # sequence). If you drop gmu, drop max_model_len to match; if the VL
   # is removed, gmu can go to ~0.5 for more KV/concurrency.
-  gpu_memory_utilization: 0.50
+  # 0.38 — the value actually in production on spark-02 (alongside the
+  # 27B TP=2 worker, which holds ~44 GiB there). Yields ~54-75k KV tokens
+  # = 1.5-2.1x concurrency at 131072, leaving ~18-23 GiB headroom.
+  # NOTE the KV figure varies ~±9% run-to-run at identical settings — read
+  # the "Maximum concurrency" line after each launch rather than assuming.
+  # Do NOT raise toward 0.50 while the TP=2 worker is resident: 0.50 needs
+  # ~61 GiB and CUDA-visible free was only ~55 GiB, which HARD-FAILS at
+  # startup ("Free memory on device ... is less than desired GPU memory
+  # utilization"). 0.50 is only viable on a node hosting nothing else.
+  gpu_memory_utilization: 0.38
   max_model_len: 131072
   # 16384. TESTED AND REVERTED from 32768 (2026-08-03). Hypothesis was that
   # 8 concurrent receipts (~3,089 prompt tok each = ~24,700) exceeded a
