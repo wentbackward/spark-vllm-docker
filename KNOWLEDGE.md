@@ -352,6 +352,23 @@ client ever sends a strict schema: `marvin`, `cortana`, `gresh-coder`,
 `orchestrator`. Safe (thinking off): `marvin-fast`, `gresh-instruct`,
 `gresh-general`, `worker`, `vlm`.
 
+**DOES NOT EXTEND TO TOOL CALLS — do not over-generalise this.** Tested
+2026-08-05 on the 27B, thinking ON (budget 4096) vs OFF:
+
+| | tool-call args valid | tool chosen from 10 |
+|---|---|---|
+| thinking OFF | 6/6 | `remote_files` 8/8 |
+| thinking ON | 6/6 | `remote_files` 8/8 |
+
+Tool calling is unaffected in both **formatting and selection** — selection
+was perfectly deterministic in both conditions. The reason is that they use
+a **different mechanism**: tool calls are extracted from the output text by
+`--tool-call-parser qwen3_coder`, whereas `response_format` uses guided
+decoding with a grammar. Thinking breaks the grammar path only.
+
+Consequence: thinking is cheap to keep enabled on agentic/tool routes; it
+is only strict schemas that must avoid it.
+
 ### Prefix caching corrupts Qwen MoE output under concurrency (RECURRING)
 
 **`--enable-prefix-caching` causes cross-request data corruption on
