@@ -290,6 +290,68 @@ on a representative coding task before promoting any new build.
 same bug class as the §below. Treat "Qwen quality regression on a new
 vLLM" as prefix-caching-until-proven-otherwise.
 
+### `enable_thinking: true` SILENTLY BREAKS structured output (2026-08-05)
+
+**If thinking is enabled, `response_format: {"type":"json_schema"}` is not
+enforced. No error, no warning — you just get free-form prose back.** And
+it is **INTERMITTENT**, which is worse than a clean failure: the same
+request can return schema-exact JSON on one call and markdown on the next.
+
+Measured on the receipts-extraction shape, schema using deliberately
+unnatural field names (`zzq_vendor`, `xk9_amount`, `w3_ccy`) so that
+enforcement is unambiguous — the model would never invent those itself:
+
+| config | schema-exact | completion tokens |
+|---|---|---|
+| thinking **OFF** (27B, direct) | **3/3** | ~42 |
+| thinking **OFF** (35B, direct) | **3/3** | 45 |
+| thinking **OFF** (35B via hikyaku) | **5/5** | ~46 |
+| thinking ON + budget 4096 (27B, direct) | **0/4** | 574-938 |
+| thinking ON (35B, direct) | **0/3** | 567-825 |
+| thinking ON (27B via hikyaku) | 2/3 | 620-689 |
+| thinking ON + budget (35B via hikyaku) | 2/3 | 654-1161 |
+
+**Scope — it is the vLLM build, not the model or the proxy:**
+
+- Reproduces on the **dense 27B and the MoE 35B** alike.
+- Reproduces **direct to vLLM and through hikyaku** identically, so a proxy
+  is not stripping the field. (This was the initial suspicion and it was
+  WRONG — hikyaku passes `response_format` through faithfully.)
+- Mechanism is visible in the server's own config:
+  `StructuredOutputsConfig(..., reasoning_parser='qwen3',
+  enable_in_reasoning=False)` — the grammar is not applied while reasoning
+  is active, and on this build it does not reliably resume afterwards.
+- **`response_format: {"type":"json_object"}` still works with thinking
+  on** — the looser "must be valid JSON" mode is unaffected. Only strict
+  schema enforcement breaks. Note json_object does NOT give you *your*
+  field names or types (it returned `company` / `"42.50 USD"` as a string
+  where the schema gave `vendor` / `42.50` as a number).
+
+**Cost, independent of correctness:** thinking-off answered in ~46 tokens;
+thinking-on burned 570-1160 for the same extraction. Roughly 15-25x.
+
+**Operational consequence: this is an either/or per route.** Thinking helps
+tool-selection and reduces agentic looping; it silently breaks structured
+output. There is no setting that gives both on this build, so split them by
+route — a thinking route for agentic/tool work, a non-thinking route for
+extraction. **Never send `response_format` to a thinking-enabled route.**
+
+**Verified-good extraction config** (hikyaku `marvin-fast`, 5/5): backend
+35B, `temperature 0.6, top_p 0.95, top_k 20, presence_penalty 0.1,
+repetition_penalty 1.05, max_tokens 16384, enable_thinking: false`. Note
+temperature did NOT need lowering — grammar-constrained decoding already
+restricts the token space, so 0.6 is fine.
+
+**How to test it properly:** use a schema with field names the model would
+never choose on its own, and **run it at least 3-5 times**. A single
+passing run proves nothing on a thinking route — "I tested it and it
+worked" is exactly how this reaches production and then fails.
+
+**Route audit 2026-08-05** — these have thinking ON and would fail if a
+client ever sends a strict schema: `marvin`, `cortana`, `gresh-coder`,
+`orchestrator`. Safe (thinking off): `marvin-fast`, `gresh-instruct`,
+`gresh-general`, `worker`, `vlm`.
+
 ### Prefix caching corrupts Qwen MoE output under concurrency (RECURRING)
 
 **`--enable-prefix-caching` causes cross-request data corruption on
