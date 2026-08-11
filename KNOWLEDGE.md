@@ -311,6 +311,23 @@ enforcement is unambiguous — the model would never invent those itself:
 | thinking ON (27B via hikyaku) | 2/3 | 620-689 |
 | thinking ON + budget (35B via hikyaku) | 2/3 | 654-1161 |
 
+**Removing `thinking_token_budget` does NOT fix it — tested 2026-08-05.**
+The budget makes it worse, but thinking alone is sufficient to break
+enforcement. Same schema, 27B:
+
+| config | schema-exact |
+|---|---|
+| thinking OFF | 3/3, 5/5, 3/3 — always |
+| thinking ON, **no budget** (direct) | 3/5 |
+| thinking ON, no budget (via `gresh-coder`) | 1/5 |
+| thinking ON, **budget 4096** | 0/5 |
+
+Unbudgeted thinking gives a **coin-flip**, which is the most dangerous
+outcome — it is the version most likely to pass a spot-check and fail
+later. (n=5 each; treat as "thinking-on ~20-60%, thinking-off 100%" rather
+than reading the individual ratios, and note the direct-vs-proxy gap at the
+same settings is noise, not a hikyaku effect.)
+
 **Scope — it is the vLLM build, not the model or the proxy:**
 
 - Reproduces on the **dense 27B and the MoE 35B** alike.
