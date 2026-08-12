@@ -311,6 +311,29 @@ enforcement is unambiguous — the model would never invent those itself:
 | thinking ON (27B via hikyaku) | 2/3 | 620-689 |
 | thinking ON + budget (35B via hikyaku) | 2/3 | 654-1161 |
 
+**The reasoning parser is NOT the cause — ruled out 2026-08-05.** Obvious
+suspect, since `StructuredOutputsConfig` names it and needs it to know where
+reasoning ends. But `--reasoning-parser qwen3` works correctly and
+consistently: over 7 runs the `reasoning` field was populated (1680-3278
+chars) in **both** the grammar-applied and grammar-not-applied cases. The
+parser separates thinking cleanly every time; the failure is in **grammar
+resumption after the reasoning block**, matching `enable_in_reasoning=False`.
+Changing the parser will not help.
+
+- **Field-name gotcha:** this vLLM version returns thinking in
+  **`reasoning`**, NOT `reasoning_content`. Checking the wrong field makes
+  it look like the parser is broken when it is fine.
+- **Three distinct failure modes**, not one — do not validate naively:
+  1. content is prose, no JSON at all;
+  2. content is valid JSON *followed by trailing junk* (passes a "starts
+     with `{`" check, fails strict parsing — the dangerous one);
+  3. structurally valid but semantically corrupted — with
+     `additionalProperties:false` and no field for a value it wants to
+     report, the model **smuggles it into another string**, e.g.
+     `"w3_ccy": "USD,y7_date_issued_2026-03-11"`. Grammar guarantees
+     structure, never sanity: include every field the model may want to
+     emit, or tell it explicitly to discard extras.
+
 **Removing `thinking_token_budget` does NOT fix it — tested 2026-08-05.**
 The budget makes it worse, but thinking alone is sufficient to break
 enforcement. Same schema, 27B:
