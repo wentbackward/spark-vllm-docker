@@ -1,0 +1,124 @@
+# Recipe: Qwen/Qwen3.8-27B-FP8 + native MTP, vision-capable.
+# Successor to qwen3.6-27b-fp8-mtp-vlm.yaml — SAME architecture
+# (Qwen3_5ForConditionalGeneration / qwen3_5, dense, 64 layers, hidden 5120,
+# vision tower, MTP heads), so it is a drop-in swap. transformers 5.5.4
+# already knows `qwen3_5`; no image rebuild needed. Cached on BOTH Sparks.
+#
+# FROM QWEN'S OFFICIAL vLLM RECIPE, with ONE DELIBERATE DEVIATION:
+#   they specify --kv-cache-dtype fp8. WE DO NOT. On GB10 these FP8
+#   checkpoints ship no attention scaling factors, so fp8 KV runs
+#   uncalibrated and is our prime suspect for long-context looping — see
+#   KNOWLEDGE section 6 "KV CACHE DTYPE". Costs only ~27% of the KV pool
+#   here (hybrid attention), which is cheap for correct numerics.
+#   Qwen also use TP4 on a GB300 tray; we run TP2 across two Sparks.
+#   Their MTP block is {"method":"mtp","num_speculative_tokens":3} — note
+#   vLLM normalises qwen3_next_mtp/qwen3_5_mtp to "mtp" anyway, so "mtp"
+#   is used here to match upstream.
+#
+# CHAT TEMPLATE — do NOT use the model's stock template. Qwen3.8's stock
+# chat_template.jinja still raises "No user query found in messages", which
+# breaks tool-calling when a conversation ends on a <tool_response> turn,
+# and it dropped `developer` role and <|think_on|>/<|think_off|> support.
+# Verified 2026-08-15: stock = 1 raise / 0 developer / 0 think_on;
+# froggeric v22 = 0 / 2 / 6. froggeric ships ONE root template covering
+# 3.5/3.6/3.8 (there is no per-version qwen3.8 directory).
+#   NOTE that template defaults enable_thinking=true and
+#   reasoning_effort='xhigh' when the caller sets neither — so any client
+#   NOT clamping thinking gets maximum reasoning. hikyaku routes clamp it;
+#   direct callers may not. Thinking also breaks strict json_schema
+#   enforcement (KNOWLEDGE section 3) — keep it off for structured output.
+
+# Recipe: Qwen/Qwen3.6-27B-FP8 + MTP, VISION-ENABLED, for the 0.23 image.
+#
+# Variant of qwen3.6-27b-fp8-mtp.yaml for benchmarking / VLM use on the
+# vLLM 0.23 image (vllm-node-tf5-v0231). Three deliberate differences
+# from the coder recipe:
+#   1. NO --language-model-only  → vision tower loads (multimodal), so
+#      this can run the receipt/vision concurrency tests.
+#   2. --enable-prefix-caching → ON as of 2026-06-28 for the production
+#      TP=2 coder use of this recipe. The §3 corruption (KNOWLEDGE "Prefix
+#      caching corrupts Qwen MoE under concurrency") was confirmed on the
+#      *MoE* 35B-A3B under CONCURRENT shared-prefix load. This is the
+#      *dense* 27B driving a single interactive coding session (concurrency
+#      ≈ 1, append-only context) — neither trigger applies, and the 27B's
+#      own prod recipe historically ran with it ON. The win is large:
+#      without it, append-only agent loops re-prefill the whole growing
+#      context EVERY turn (~quadratic in turns); with it, only the newly
+#      appended tokens prefill (TTFT stays flat). If this endpoint is ever
+#      fanned CONCURRENT shared-prefix requests, re-verify with §3's
+#      single==multi acceptance gate or set --no-enable-prefix-caching.
+#   3. NO mods/flashqla → its patch target (gdn_linear_attn.py) was
+#      relocated in 0.23 and aborts launch; the dense 27B doesn't use GDN
+#      anyway. (Re-add only on the 0.19.2 image.)
+#
+# Launch on spark-02 with: -t vllm-node-tf5-v0231 --solo
+
+# KV CACHE: keep 16-bit (auto), do NOT use fp8 (2026-08-02).
+#   On GB10 the correct answer for KV-cache quantisation is `auto` / a
+#   16-bit dtype. The FP8 checkpoint ships NO attention scaling factors, so
+#   `--kv-cache-dtype fp8` makes vLLM fall back to uncalibrated q_scale /
+#   prob_scale of 1.0 and log "This may cause accuracy issues". Suspected
+#   contributor to the long-context looping seen on the 35B (whose recipe
+#   still sets fp8 KV -- revisit it too).
+#   Qwen3.6-27B uses a HYBRID attention layout, so its KV footprint is
+#   already modest: dropping fp8 costs less than it would on a fully
+#   quadratic model, while the accuracy benefit is large. Cost measured
+#   here: KV pool halves (686,400 -> ~343k tokens at gmu 0.55), i.e.
+#   concurrency at 262144 falls from 9.59x to ~1.3x -- compensate with gmu.
+
+recipe_version: "1"
+name: Qwen38-27B-FP8-MTP-VLM
+description: vLLM serving Qwen3.8-27B-FP8 with MTP, vision-capable, prefix-caching ON
+
+model: Qwen/Qwen3.8-27B-FP8
+
+container: vllm-node-tf5
+
+mods:
+  - mods/fix-qwen3.8-chat-template
+
+defaults:
+  port: 3042
+  host: 0.0.0.0
+  tensor_parallel: 1
+  # 0.36 is sized for TP=2 ACROSS BOTH SPARKS (weights split ~14.65 GiB
+  # per node), giving ~167k KV tokens = 2.44x concurrency at 262144 and
+  # leaving 55-67 GiB free per node. Calibrated 2026-08-02 from three
+  # points (gmu 0.70/0.58/0.36 -> 483k/374k/167k KV tokens, ~906k tokens
+  # per unit of gmu), so other targets can be hit first try.
+  # SOLO launches need MORE (~0.50): weights are not split, so the same
+  # gmu leaves far less for KV. start-cluster.sh overrides for its
+  # single-node fallback path.
+  # Do NOT raise toward 0.70 with anything else resident: that
+  # over-committed both nodes on 2026-08-02, paged 1.3 GiB of the engine
+  # to swap and HALVED decode (28.2 -> 12.4 t/s) with no error shown.
+  gpu_memory_utilization: 0.36
+  max_model_len: 262144
+  max_num_batched_tokens: 32768
+  max_num_seqs: 8
+
+env:
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+  HF_HUB_OFFLINE: 1
+
+command: |
+  vllm serve Qwen/Qwen3.8-27B-FP8 \
+    --served-model-name Qwen/Qwen3.8-27B-FP8 \
+    --host {host} \
+    --port {port} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --enable-auto-tool-choice \
+    --reasoning-parser qwen3 \
+    --tool-call-parser qwen3_coder \
+    --kv-cache-dtype auto \
+    --load-format fastsafetensors \
+    --attention-backend flashinfer \
+    --enable-prefix-caching \
+    --enable-chunked-prefill \
+    --chat-template qwen3.8.jinja \
+    --default-chat-template-kwargs '{{"preserve_thinking": false}}' \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":3}}' \
+    -tp {tensor_parallel}
