@@ -624,6 +624,7 @@ phasing plan if you're implementing or extending it.
 
 | Model | Quant | Weights | Multimodal | Notes |
 |---|---|---|---|---|
+| **Qwen3.8-27B-FP8** | FP8 | ~29 GiB | **yes (image)** | **CURRENT :3042 model (2026-08-15).** Drop-in successor to 3.6-27B — identical arch, see §Qwen3.8 below |
 | Qwen3.6-27B-FP8 | FP8 | ~28 GiB | yes (text-only via `--language-model-only`) | Dense, coding-focused, 256K context |
 | cyankiwi/Qwen3.6-27B-AWQ-INT4 | AWQ-INT4 | ~14 GiB | text-only | Halves bandwidth → ~2× decode (see §5). **Use `max_model_len: 196608` (75% of 262K) and MTP `num_speculative_tokens: 2`**. Higher MTP causes output looping on real agentic workloads. |
 | Qwen3.6-35B-A3B-FP8 | FP8 | ~34 GiB | **yes (image + video)** | MoE, 3B active params, ~3× decode of dense 27B at FP8. Qwen3-VL-class — image AND video (no audio). See §video below. |
@@ -636,6 +637,80 @@ don't need to know which quant. To add multiple aliases:
 ```
 --served-model-name Qwen/Qwen3.6-27B-AWQ-INT4 Qwen/Qwen3.6-27B
 ```
+
+### Qwen3.8-27B-FP8 — drop-in replacement for 3.6-27B (2026-08-15)
+
+**Switched `:3042` from Qwen3.6-27B-FP8 to Qwen3.8-27B-FP8. It is a true
+drop-in: no image rebuild, no code change.**
+
+| | 3.6-27B | 3.8-27B |
+|---|---|---|
+| architecture | `Qwen3_5ForConditionalGeneration` | **same** |
+| model_type | `qwen3_5` | **same** |
+| shape | dense, 64 layers, hidden 5120 | **same** |
+| vision / MTP heads | yes / yes | **yes / yes** |
+| weights per node (TP=2) | 14.65 GiB | **14.65 GiB** |
+| KV @ gmu 0.36 | 168,800 tok (2.46x) | 164,000 tok (2.40x) |
+
+`transformers 5.5.4` already knows `qwen3_5`, so the existing
+`vllm-node-tf5` image runs it unmodified. Recipe:
+`recipes/qwen3.8-27b-fp8-mtp-vlm.yaml`. Verified working: text, vision,
+tool calls, and strict `json_schema`.
+
+**DELIBERATE DEVIATION FROM QWEN'S OFFICIAL vLLM RECIPE.** Qwen publish
+`--kv-cache-dtype fp8`. **We use `auto`.** On GB10 these FP8 checkpoints
+ship no attention scaling factors, so fp8 KV runs uncalibrated — see §6
+"KV CACHE DTYPE". Qwen also use TP4 on a GB300 tray; we run TP2 across two
+Sparks. Their MTP spelling is `{"method":"mtp","num_speculative_tokens":3}`
+— vLLM normalises `qwen3_next_mtp` / `qwen3_5_mtp` to `"mtp"` anyway, so
+either works.
+
+**DO NOT USE THE STOCK 3.8 CHAT TEMPLATE.** It still raises *"No user query
+found in messages"*, which breaks tool-calling when a conversation ends on
+a `<tool_response>` turn, and it dropped `developer` role and
+`<|think_on|>/<|think_off|>` support. Measured 2026-08-15:
+
+| | raise present | `developer` | `think_on` |
+|---|---|---|---|
+| 3.8 stock | **1** | 0 | 0 |
+| froggeric v22 | 0 | 2 | 6 |
+
+Use `mods/fix-qwen3.8-chat-template` (froggeric root `chat_template.jinja`,
+`qwen3.8-froggeric-v22`). froggeric ship **one root template covering
+3.5 / 3.6 / 3.8** — there is no per-version `qwen3.8/` directory.
+
+**WATCH THIS DEFAULT:** that template sets `enable_thinking = true` and
+`reasoning_effort = 'xhigh'` when the caller specifies neither. Any client
+NOT clamping thinking gets maximum reasoning — and thinking silently breaks
+strict `json_schema` (§3).
+
+**Renaming the served model BREAKS every client that pins the old name.**
+All 8 hikyaku routes sent `real_model: Qwen/Qwen3.6-27B-FP8` and returned
+`404 The model does not exist` the moment the endpoint switched. Either
+update the clients, or add the old name as a second
+`--served-model-name` alias during transition.
+
+### hikyaku: `enable_thinking` works under `clamp:`, NOT under `default:`
+
+**A route with `enable_thinking: false` under `default:` still thinks.**
+Measured 2026-08-15, same intent, only the key differs:
+
+| route | key | reasoning chars | content |
+|---|---|---|---|
+| `vlm` | `clamp:` | **0** | `'Hello to you'` |
+| `marvin-fast` | `default:` | **2706** | **`''` (empty)** |
+
+The failure is nasty: with thinking unintentionally on, `marvin-fast` spent
+its whole 800-token budget reasoning and returned **empty content** with
+`finish_reason: length`. A short `max_tokens` on a thinking route yields an
+empty response, not a truncated one. (`zero_content_detection` exists as a
+hikyaku defender for exactly this, and was disabled.)
+
+Moving the key to `clamp:` fixed both affected routes immediately —
+reasoning 0, and strict `json_schema` back to 3/3.
+
+**Rule: put `enable_thinking` in `clamp:`.** Verify empirically by reading
+the `reasoning` field length, not by trusting the config.
 
 ### Quant quality notes
 
